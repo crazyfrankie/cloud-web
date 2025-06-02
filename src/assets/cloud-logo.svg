@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="60" viewBox="0 0 150 60">
+  <defs>
+    <linearGradient id="cloudGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#667eea" />
+      <stop offset="100%" stop-color="#764ba2" />
+    </linearGradient>
+  </defs>
+  <g>
+    <path d="M45 25c0-0.5-0.25-1-0.25-1.5 0-9.5-7.75-17.25-17.25-17.25-7 0-13 4.25-15.75 10.25-1.5-0.5-2.75-0.75-4.25-0.75-6.75 0-12.25 5.5-12.25 12.25 0 6.5 5.25 11.75 11.75 11.75h11.5v-6h-7.5l12.5-12.5 12.5 12.5h-7.5v6h16.5c6.25 0 11.25-5 11.25-11.25s-5-11.25-11.25-11.25c0 0 0 0.25 0 0.25z" fill="url(#cloudGradient)"/>
+    <path d="M27.5 42v12h5v-12h-5z" fill="url(#cloudGradient)"/>
+    <text x="65" y="38" font-family="'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" font-size="24" font-weight="bold" fill="#667eea">Cloud</text>
+    <text x="65" y="55" font-family="'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" font-size="14" fill="#764ba2">Storage</text>
+  </g>
+</svg>

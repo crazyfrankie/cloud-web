@@ -18,7 +18,6 @@ interface FolderItem {
 
 interface State {
   user: User | null;
-  currentFolderId: number;
   currentPath: string;
   folderStack: FolderItem[];
 }
@@ -26,8 +25,7 @@ interface State {
 export default createStore<State>({
   state: {
     user: null,
-    currentFolderId: 0, // 0表示根目录
-    currentPath: '/',
+    currentPath: '/', // 当前路径，根目录为 '/'
     folderStack: [], // 导航历史栈，存储 {id, name, path} 对象
   },
   getters: {
@@ -42,8 +40,7 @@ export default createStore<State>({
     clearUser(state) {
       state.user = null;
     },
-    setCurrentFolder(state, { id, path }) {
-      state.currentFolderId = id;
+    setCurrentPath(state, path) {
       state.currentPath = path;
     },
     pushToFolderStack(state, folder) {
@@ -54,7 +51,6 @@ export default createStore<State>({
     },
     resetFolderStack(state) {
       state.folderStack = [];
-      state.currentFolderId = 0;
       state.currentPath = '/';
     }
   },
@@ -67,7 +63,7 @@ export default createStore<State>({
       commit('resetFolderStack');
     },
     navigateToFolder({ commit }, folder) {
-      commit('setCurrentFolder', { id: folder.id, path: folder.path });
+      commit('setCurrentPath', folder.path);
       commit('pushToFolderStack', folder);
     },
     navigateBack({ commit, state }) {
@@ -75,8 +71,8 @@ export default createStore<State>({
         commit('popFolderStack');
         const previousFolder = state.folderStack.length > 0 
           ? state.folderStack[state.folderStack.length - 1] 
-          : { id: 0, path: '/' };
-        commit('setCurrentFolder', { id: previousFolder.id, path: previousFolder.path });
+          : { name: 'root', path: '/' };
+        commit('setCurrentPath', previousFolder.path);
       }
     }
   },

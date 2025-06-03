@@ -25,7 +25,7 @@
         <button 
           class="btn-back" 
           @click="navigateToParent" 
-          :disabled="store.state.currentFolderId === 0"
+          :disabled="store.state.currentPath === '/'"
         >
           返回上级
         </button>
@@ -49,7 +49,7 @@
     <upload-modal 
       :visible="uploadModalVisible" 
       @close="uploadModalVisible = false"
-      @upload="handleUpload"
+      @upload-complete="refreshFiles"
     />
 
     <!-- 创建文件夹模态框 -->
@@ -88,13 +88,13 @@ const dropdownVisible = ref(false)
 const uploadModalVisible = ref(false)
 const folderModalVisible = ref(false)
 const renameModalVisible = ref(false)
-const fileToRename = ref(null)
+const fileToRename = ref<any>(null)
 
 const userAvatar = computed(() => store.getters.userAvatar)
 const currentPath = computed(() => store.state.currentPath)
 
 onMounted(() => {
-  loadFolderContents(store.state.currentFolderId)
+  loadFolderContents(store.state.currentPath)
 })
 
 // 切换用户下拉菜单
@@ -122,6 +122,11 @@ const navigateToProfile = () => {
   router.push('/profile')
 }
 
+// 刷新文件列表（上传完成后调用）
+const refreshFiles = () => {
+  loadFolderContents(store.state.currentPath)
+}
+
 // 退出登录
 const logout = async () => {
   try {
@@ -139,13 +144,13 @@ const logout = async () => {
 }
 
 // 加载文件夹内容
-const loadFolderContents = async (folderId: number) => {
+const loadFolderContents = async (path: string) => {
   loading.value = true
   files.value = [] // 重置文件列表，避免显示旧数据
   
   try {
-    console.log(`Loading folder contents for folderId: ${folderId}`);
-    const response = await fetch(`${config.apiBaseUrl}/folder/${folderId}`, {
+    console.log(`Loading folder contents for path: ${path}`);
+    const response = await fetch(`${config.apiBaseUrl}/files?path=${encodeURIComponent(path)}`, {
       method: 'GET',
       credentials: 'include'
     })
@@ -155,38 +160,24 @@ const loadFolderContents = async (folderId: number) => {
     
     if (result.code === 20000) {
       try {
-        // 后端返回的是一个包含 files 和 folders 两个数组的对象
-        if (!result.data) {
-          console.warn('API response missing data field');
+        // 检查数据是否存在
+        if (!result.data || !result.data.contents) {
+          console.warn('API response missing contents field');
           files.value = [];
           return;
         }
         
-        const fileArray = Array.isArray(result.data.files) ? result.data.files : [];
-        const folderArray = Array.isArray(result.data.folders) ? result.data.folders : [];
+        const contents = result.data.contents || [];
         
-        // 处理文件
-        const processedFiles = fileArray.map((item: any) => ({
+        // 处理文件和文件夹列表
+        const processedData = contents.map((item: any) => ({
           ...item,
           id: item.id || 0,
           name: item.name || 'Unknown',
-          type: 'file',
+          type: item.isDir ? 'folder' : 'file',
           updateTime: item.utime ? new Date(item.utime * 1000).toISOString() : new Date().toISOString(),
           size: item.size || 0
         }));
-        
-        // 处理文件夹
-        const processedFolders = folderArray.map((item: any) => ({
-          ...item,
-          id: item.id || 0,
-          name: item.name || 'Unknown',
-          type: 'folder',
-          updateTime: item.utime ? new Date(item.utime * 1000).toISOString() : new Date().toISOString(),
-          size: 0 // 文件夹大小默认为0
-        }));
-        
-        // 合并文件和文件夹
-        const processedData = [...processedFolders, ...processedFiles];
         
         console.log('Processed data:', processedData);
         files.value = processedData;
@@ -209,20 +200,24 @@ const loadFolderContents = async (folderId: number) => {
 
 // 导航到文件夹
 const navigateToFolder = (folder: any) => {
+  const newPath = folder.path || (store.state.currentPath === '/' ? 
+    '/' + folder.name : 
+    store.state.currentPath + '/' + folder.name)
+  
   store.dispatch('navigateToFolder', {
     id: folder.id,
     name: folder.name,
-    path: currentPath.value + folder.name + '/'
+    path: newPath
   })
   
-  loadFolderContents(folder.id)
+  loadFolderContents(newPath)
 }
 
 // 导航到上一级文件夹
 const navigateToParent = () => {
-  if (store.state.currentFolderId !== 0) {
+  if (store.state.currentPath !== '/') {
     store.dispatch('navigateBack')
-    loadFolderContents(store.state.currentFolderId)
+    loadFolderContents(store.state.currentPath)
   }
 }
 
@@ -261,8 +256,7 @@ const deleteFile = async (file: any) => {
   }
   
   try {
-    const endpoint = file.type === 'folder' ? '/folder' : '/file'
-    const response = await fetch(`${config.apiBaseUrl}${endpoint}/${file.id}`, {
+    const response = await fetch(`${config.apiBaseUrl}/files?path=${encodeURIComponent(file.path)}`, {
       method: 'DELETE',
       credentials: 'include'
     })
@@ -271,7 +265,7 @@ const deleteFile = async (file: any) => {
     
     if (result.code === 20000) {
       alert('删除成功')
-      loadFolderContents(store.state.currentFolderId)
+      loadFolderContents(store.state.currentPath)
     } else {
       alert('删除失败：' + result.msg)
     }
@@ -292,28 +286,29 @@ const handleRenameFile = async (newName: string) => {
   if (!fileToRename.value) return
   
   try {
-    const isFolder = fileToRename.value.type === 'folder'
-    const endpoint = isFolder ? '/folder' : '/file'
+    // 构建新的路径
+    const oldPath = fileToRename.value.path
+    const parentPath = oldPath.substring(0, oldPath.lastIndexOf('/'))
+    const newPath = parentPath === '' ? `/${newName}` : `${parentPath}/${newName}`
     
-    // 构建请求数据，使用 UpdateFileReq 或 CreateFolderReq 结构
-    const requestData = {
-      name: newName
-    }
-    
-    const response = await fetch(`${config.apiBaseUrl}${endpoint}/${fileToRename.value.id}`, {
-      method: 'PUT',  // 使用 PUT 方法，如果后端需要 PATCH 可以修改
+    // 更新文件信息
+    const response = await fetch(`${config.apiBaseUrl}/files/${fileToRename.value.id}`, {
+      method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
       },
       credentials: 'include',
-      body: JSON.stringify(requestData)
+      body: JSON.stringify({
+        name: newName,
+        newPath: newPath
+      })
     })
     
     const result = await response.json()
     
     if (result.code === 20000) {
       alert('重命名成功')
-      loadFolderContents(store.state.currentFolderId)
+      loadFolderContents(store.state.currentPath)
       renameModalVisible.value = false
     } else {
       alert('重命名失败：' + result.msg)
@@ -344,7 +339,7 @@ const handleUpload = async (files: FileList) => {
       const file = files[i]
       
       // 1. 预上传检查
-      const checkResponse = await fetch(`${config.apiBaseUrl}/file/pre-upload-check`, {
+      const checkResponse = await fetch(`${config.apiBaseUrl}/files/precreate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -353,8 +348,8 @@ const handleUpload = async (files: FileList) => {
         body: JSON.stringify({
           name: file.name,
           size: file.size,
-          hash: await calculateFileHash(file),  // 这里需要实现一个哈希函数
-          folderId: store.state.currentFolderId
+          hash: await calculateFileHash(file),
+          parentPath: store.state.currentPath // 添加父目录路径
         })
       })
       
@@ -392,7 +387,11 @@ const handleUpload = async (files: FileList) => {
       }
       
       // 3. 确认上传完成
-      const confirmResponse = await fetch(`${config.apiBaseUrl}/file/confirm-upload`, {
+      const filePath = store.state.currentPath === '/' ? 
+        `/${file.name}` : 
+        `${store.state.currentPath}/${file.name}`;
+        
+      const confirmResponse = await fetch(`${config.apiBaseUrl}/files/create`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -400,10 +399,12 @@ const handleUpload = async (files: FileList) => {
         credentials: 'include',
         body: JSON.stringify({
           name: file.name,
+          path: filePath,
           size: file.size,
           hash: await calculateFileHash(file),
-          folderId: store.state.currentFolderId,
-          url: objectKey  // 使用对象键作为URL
+          url: objectKey,  // 使用对象键作为URL
+          isDir: false,
+          deviceId: 'web-client'
         })
       })
       
@@ -417,7 +418,7 @@ const handleUpload = async (files: FileList) => {
     // 所有文件处理完成后，重新加载文件夹内容
     alert('上传处理完成')
     uploadModalVisible.value = false
-    loadFolderContents(store.state.currentFolderId)
+    loadFolderContents(store.state.currentPath)
   } catch (error) {
     console.error('Upload error:', error)
     alert('上传过程中出错，请检查网络连接')
@@ -436,7 +437,7 @@ const calculateFileHash = async (file: File): Promise<string> => {
 // 处理创建文件夹
 const handleCreateFolder = async (folderName: string) => {
   try {
-    const response = await fetch(`${config.apiBaseUrl}/folder`, {
+    const response = await fetch(`${config.apiBaseUrl}/files`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -444,7 +445,11 @@ const handleCreateFolder = async (folderName: string) => {
       credentials: 'include',
       body: JSON.stringify({
         name: folderName,
-        parentId: store.state.currentFolderId
+        path: store.state.currentPath === '/' ? 
+          `/${folderName}` : 
+          `${store.state.currentPath}/${folderName}`,
+        isDir: true,
+        size: 0
       })
     })
     
@@ -453,7 +458,7 @@ const handleCreateFolder = async (folderName: string) => {
     if (result.code === 20000) {
       alert('创建成功')
       folderModalVisible.value = false
-      loadFolderContents(store.state.currentFolderId)
+      loadFolderContents(store.state.currentPath)
     } else {
       alert('创建失败：' + result.msg)
     }

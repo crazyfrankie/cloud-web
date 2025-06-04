@@ -18,6 +18,12 @@ const routes: Array<RouteRecordRaw> = [
     name: 'profile',
     component: () => import(/* webpackChunkName: "profile" */ '../views/ProfileView.vue'),
     meta: { requiresAuth: true }
+  },
+  {
+    path: '/text-preview/:fileId',
+    name: 'textPreview',
+    component: () => import(/* webpackChunkName: "textPreview" */ '../views/TextPreviewView.vue'),
+    meta: { requiresAuth: true }
   }
 ]
 

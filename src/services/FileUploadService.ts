@@ -21,6 +21,12 @@ interface UploadedChunk {
   etag: string;
 }
 
+// 分块状态信息（用于断点续传）
+interface PartStatus {
+  objectKey: string;
+  etag: string;
+}
+
 class FileUploadService {
   
   /**
@@ -83,14 +89,14 @@ class FileUploadService {
   }
 
   /**
-   * 优化的大文件分块上传
+   * 优化的大文件分块上传（支持断点续传）
    * @param file 文件对象  
    * @param parentPath 父目录路径
    * @param hash 文件哈希
    * @param options 上传选项
    */
   private async uploadLargeFileOptimized(file: File, parentPath: string, hash: string, options?: UploadOptions): Promise<UploadResult> {
-    // 1. 初始化优化上传
+    // 1. 初始化优化上传（已包含断点续传状态）
     options?.onProgress?.(5);
     const initResult = await this.initOptimizedUpload(file, parentPath, hash);
     
@@ -103,20 +109,24 @@ class FileUploadService {
       };
     }
 
-    // 2. 分块上传
-    const { uploadId, chunkUrls, optimalChunkSize, recommendedConcurrency } = initResult;
-    const totalChunks = Math.ceil(file.size / optimalChunkSize);
+    // 2. 从初始化结果中获取已上传分块状态（无需额外查询）
+    const { uploadId, chunkUrls, optimalChunkSize, recommendedConcurrency, existingParts } = initResult;
+    const uploadStatus = existingParts || []; // 使用初始化时返回的状态
     
-    const uploadedChunks = await this.uploadChunksParallel(
+    console.log('初始化上传完成，已上传分块数:', uploadStatus.length);
+    
+    // 3. 分块上传（跳过已上传的分块）
+    const uploadedChunks = await this.uploadChunksWithResume(
       file, 
       chunkUrls, 
       optimalChunkSize, 
       recommendedConcurrency,
+      uploadStatus,
       (progress) => options?.onProgress?.(5 + progress * 0.85), // 5%-90%
       options?.signal
     );
 
-    // 3. 完成上传
+    // 4. 完成上传
     options?.onProgress?.(95);
     const filePath = parentPath === '/' ? 
       `/${file.name}` : 
@@ -215,7 +225,7 @@ class FileUploadService {
    * 初始化优化上传
    */
   private async initOptimizedUpload(file: File, parentPath: string, hash: string) {
-    const response = await fetch(`${config.apiBaseUrl}/files/upload`, {
+    const response = await fetch(`${config.apiBaseUrl}/files/preupload`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -244,8 +254,142 @@ class FileUploadService {
   }
 
   /**
-   * 完成优化上传
+   * 获取上传状态（用于断点续传）
+   * 注意：正常情况下不需要单独调用此方法，因为InitUpload已包含状态信息
+   * 此方法保留用于特殊情况下的状态查询
    */
+  private async getUploadStatus(uploadId: string): Promise<PartStatus[]> {
+    try {
+      const response = await fetch(`${config.apiBaseUrl}/files/upload/status?uploadId=${encodeURIComponent(uploadId)}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include'
+      });
+
+      if (!response.ok) {
+        console.warn(`获取上传状态失败: HTTP ${response.status}`);
+        return [];
+      }
+
+      const result = await response.json();
+      if (result.code !== 20000) {
+        console.warn('获取上传状态业务逻辑失败:', result.msg);
+        return [];
+      }
+
+      console.log('获取到已上传分块状态:', result.data);
+      return result.data || [];
+    } catch (error) {
+      console.warn('获取上传状态出错:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 支持断点续传的分块上传
+   */
+  private async uploadChunksWithResume(
+    file: File,
+    chunkUrls: any[],
+    chunkSize: number,
+    concurrency: number,
+    existingParts: PartStatus[],
+    onProgress?: (progress: number) => void,
+    signal?: AbortSignal
+  ): Promise<UploadedChunk[]> {
+    const totalChunks = Math.ceil(file.size / chunkSize);
+    let completedChunks = 0;
+
+    console.log('开始支持断点续传的分块上传:', {
+      totalChunks,
+      concurrency,
+      chunkSize,
+      chunkUrlsCount: chunkUrls.length,
+      existingPartsCount: existingParts.length
+    });
+
+    // 解析已上传分块信息
+    const existingChunks = new Map<number, string>(); // partNumber -> etag
+    for (const part of existingParts) {
+      const partNumber = this.extractPartNumberFromObjectKey(part.objectKey);
+      if (partNumber > 0) {
+        existingChunks.set(partNumber, part.etag);
+        console.log(`发现已上传分块: ${partNumber}, ETag: ${part.etag}`);
+      }
+    }
+
+    // 创建任务函数（只为未上传的分块创建任务）
+    const taskFunctions: (() => Promise<UploadedChunk>)[] = [];
+    const results: UploadedChunk[] = [];
+
+    for (let i = 0; i < totalChunks; i++) {
+      const expectedPartNumber = i + 1;
+      
+      // 检查是否已存在
+      if (existingChunks.has(expectedPartNumber)) {
+        const existingEtag = existingChunks.get(expectedPartNumber)!;
+        results[i] = { partNumber: expectedPartNumber, etag: existingEtag };
+        completedChunks++;
+        console.log(`跳过已上传分块: ${expectedPartNumber}, 使用现有ETag: ${existingEtag}`);
+        continue;
+      }
+
+      // 需要上传的分块
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize, file.size);
+      const chunkUrl = chunkUrls.find(url => url.partNumber === expectedPartNumber);
+
+      if (!chunkUrl) {
+        throw new Error(`未找到分块 ${expectedPartNumber} 的上传URL`);
+      }
+
+      // 创建上传任务
+      taskFunctions.push(async () => {
+        const chunk = file.slice(start, end);
+        const etag = await this.uploadSingleChunk(chunk, chunkUrl.presignedUrl, expectedPartNumber, signal);
+        completedChunks++;
+        onProgress?.(completedChunks / totalChunks);
+        console.log(`新上传分块 ${expectedPartNumber}/${totalChunks} 完成, ETag: ${etag}`);
+        return { partNumber: expectedPartNumber, etag };
+      });
+    }
+
+    // 更新初始进度（包含已存在的分块）
+    onProgress?.(completedChunks / totalChunks);
+
+    // 如果有需要上传的分块，则并发执行
+    if (taskFunctions.length > 0) {
+      console.log(`需要上传 ${taskFunctions.length} 个分块，跳过了 ${existingChunks.size} 个已存在分块`);
+      const newResults = await this.limitConcurrency(taskFunctions, concurrency);
+      
+      // 将新上传的结果合并到结果数组中
+      let newResultIndex = 0;
+      for (let i = 0; i < totalChunks; i++) {
+        if (!results[i]) {
+          results[i] = newResults[newResultIndex++];
+        }
+      }
+    } else {
+      console.log('所有分块均已存在，无需重新上传');
+    }
+
+    return results.sort((a, b) => a.partNumber - b.partNumber);
+  }
+
+  /**
+   * 从对象键中提取分块编号
+   * 对象键格式：{uid}/chunks/{uploadId}/{partNumber}
+   */
+  private extractPartNumberFromObjectKey(objectKey: string): number {
+    const parts = objectKey.split('/');
+    if (parts.length >= 4 && parts[1] === 'chunks') {
+      const partNumber = parseInt(parts[3], 10);
+      return isNaN(partNumber) ? 0 : partNumber;
+    }
+    return 0;
+  }
   private async completeOptimizedUpload(uploadId: string, file: File, parentPath: string, hash: string, uploadedChunks: UploadedChunk[]) {
     console.log('开始完成优化上传:', {
       uploadId,

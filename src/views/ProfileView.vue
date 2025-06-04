@@ -41,6 +41,11 @@
               <label>注册时间:</label>
               <span class="info-text">{{ formatDate(userInfo.createTime) }}</span>
             </div>
+
+            <div class="form-group">
+              <label>上次修改:</label>
+              <span class="info-text">{{ formatDate(userInfo.updateTime) }}</span>
+            </div>
             
             <div class="profile-actions">
               <button type="submit" class="btn-primary" :disabled="isLoading">
@@ -71,7 +76,8 @@ const userInfo = reactive({
   nickname: '',
   avatar: '',
   birthday: '',
-  createTime: ''
+  createTime: 0,
+  updateTime: 0
 })
 
 onMounted(async () => {
@@ -93,7 +99,8 @@ const loadUserInfo = async () => {
       userInfo.nickname = data.nickname
       userInfo.avatar = data.avatar
       userInfo.birthday = data.birthday ? data.birthday.substr(0, 10) : ''
-      userInfo.createTime = data.createTime
+      userInfo.createTime = data.ctime
+      userInfo.updateTime = data.utime
     } else {
       alert('获取用户信息失败')
       router.push('/')
@@ -195,12 +202,29 @@ const updateProfile = async () => {
   }
 }
 
-const formatDate = (dateString: string) => {
-  if (!dateString) return '未知'
+const formatDate = (time: number | bigint) => {
+  if (!time) return '未知';
   
-  const date = new Date(dateString)
-  return date.toLocaleDateString('zh-CN')
-}
+  // 转换为毫秒（JavaScript Date 使用毫秒）
+  const milliseconds = typeof time === 'bigint' 
+    ? Number(time) * 1000 
+    : time * 1000;
+  
+  const date = new Date(milliseconds);
+  
+  // 获取年月日
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1; // 月份从 0 开始，所以要 +1
+  const day = date.getDate();
+  
+  // 获取时分秒
+  const hours = date.getHours().toString().padStart(2, '0'); // 补零
+  const minutes = date.getMinutes().toString().padStart(2, '0');
+  const seconds = date.getSeconds().toString().padStart(2, '0');
+  
+  // 返回格式：2025/5/24 14:30:45
+  return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
+};
 
 const goBack = () => {
   router.push('/dashboard')

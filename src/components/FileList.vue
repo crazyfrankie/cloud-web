@@ -42,8 +42,11 @@
           </div>
           <span 
             class="file-label"
-            :class="{ 'folder-name': file.type === 'folder' }"
-            @click="file.type === 'folder' ? $emit('navigate', file) : null"
+            :class="{ 
+              'folder-name': file.type === 'folder',
+              'file-name': file.type !== 'folder'
+            }"
+            @click="handleFileClick(file)"
           >
             {{ file.name }}
           </span>
@@ -51,11 +54,7 @@
         <div class="file-size">{{ formatFileSize(file.size) }}</div>
         <div class="file-date">{{ formatDate(file.updateTime) }}</div>
         <div class="file-actions">
-          <button 
-            v-if="file.type !== 'folder'" 
-            class="action-btn" 
-            @click="$emit('download', file)"
-          >
+          <button v-if="file.type !== 'folder'" class="action-btn download" @click="handleDownload(file)">
             下载
           </button>
           <button class="action-btn" @click="$emit('rename', file)">
@@ -85,14 +84,38 @@ const props = defineProps({
 })
 
 // 定义事件
-defineEmits(['navigate', 'download', 'delete', 'rename'])
+const emit = defineEmits(['navigate', 'preview', 'delete', 'rename'])
 
 const selectedFiles = ref<Array<string | number>>([])
+
+// 处理文件/文件夹点击
+const handleFileClick = (file: any) => {
+  if (file.type === 'folder') {
+    emit('navigate', file)
+  } else {
+    // 使用统一的预览API，让后端决定是预览还是下载
+    const previewUrl = file.previewUrl || `/api/files/${file.id}/preview`
+    window.open(previewUrl, '_blank')
+  }
+}
+
+// 处理文件下载
+const handleDownload = (file: any) => {
+  const downloadUrl = file.downloadUrl || `/api/files/${file.id}/download`
+  // 创建一个隐藏的链接来触发下载
+  const link = document.createElement('a')
+  link.href = downloadUrl
+  link.download = file.name
+  link.target = '_blank'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
 
 // 格式化文件大小
 const formatFileSize = (bytes: number) => {
   if (bytes === undefined || bytes === null) return '-'
-  if (bytes === 0) return '0 B'
+  if (bytes === 0) return '-'
   
   const k = 1024
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -265,6 +288,16 @@ const toggleSelectAll = (event: Event) => {
   text-decoration: underline;
 }
 
+.file-name {
+  color: #4a5568;
+  cursor: pointer;
+}
+
+.file-name:hover {
+  color: #667eea;
+  text-decoration: underline;
+}
+
 .file-size {
   flex: 1;
   text-align: right;
@@ -294,6 +327,15 @@ const toggleSelectAll = (event: Event) => {
 
 .action-btn:hover {
   background: #e9eaee;
+}
+
+.action-btn.download {
+  color: #667eea;
+  border-color: #667eea;
+}
+
+.action-btn.download:hover {
+  background: #f0f2ff;
 }
 
 .action-btn.delete {

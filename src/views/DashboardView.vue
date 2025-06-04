@@ -39,7 +39,6 @@
         :files="files" 
         :loading="loading"
         @navigate="navigateToFolder"
-        @download="downloadFile"
         @delete="deleteFile"
         @rename="showRenameModal"
       />
@@ -176,7 +175,8 @@ const loadFolderContents = async (path: string) => {
           name: item.name || 'Unknown',
           type: item.isDir ? 'folder' : 'file',
           updateTime: item.utime ? new Date(item.utime * 1000).toISOString() : new Date().toISOString(),
-          size: item.size || 0
+          size: item.size || 0,
+          url: item.url || '' // 映射URL字段用于文件预览
         }));
         
         console.log('Processed data:', processedData);
@@ -221,33 +221,7 @@ const navigateToParent = () => {
   }
 }
 
-// 下载文件
-const downloadFile = (file: any) => {
-  try {
-    if (!file || !file.url) {
-      alert('文件链接不存在，无法下载')
-      return
-    }
-    
-    // 根据后端 API 构建下载链接
-    // 有两种可能方式：使用后端提供的直接下载端点，或者使用文件的 URL
-    const downloadUrl = file.url.startsWith('http') 
-      ? file.url 
-      : `${config.apiBaseUrl}/file/download/${file.id}`
-    
-    // 创建一个隐藏的 a 标签并点击它来下载文件
-    const a = document.createElement('a')
-    a.href = downloadUrl
-    a.download = file.name || 'download'
-    a.target = '_blank' // 在新标签页中打开，以避免跨域问题
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-  } catch (error) {
-    console.error('Download error:', error)
-    alert('下载失败，请检查网络连接或文件权限')
-  }
-}
+
 
 // 删除文件
 const deleteFile = async (file: any) => {

@@ -407,9 +407,7 @@ class FileUploadService {
 
     const response = await fetch(`${config.apiBaseUrl}/files/upload/complete?uploadId=${uploadId}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: AuthService.createAuthHeaders(),
       credentials: 'include',
       body: JSON.stringify({
         uploadedChunks: uploadedChunks,
@@ -429,6 +427,9 @@ class FileUploadService {
       });
       throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
     }
+
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response);
 
     const result = await response.json();
     if (result.code !== 20000) {

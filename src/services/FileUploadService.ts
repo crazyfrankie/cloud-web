@@ -1,5 +1,6 @@
 // 优化的文件上传服务
 import config from '@/config'
+import AuthService from './AuthService'
 
 // 上传选项
 interface UploadOptions {
@@ -147,9 +148,7 @@ class FileUploadService {
   private async preUploadCheck(name: string, size: number, hash: string, parentPath: string) {
     const response = await fetch(`${config.apiBaseUrl}/files/precreate`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: AuthService.createAuthHeaders(),
       credentials: 'include',
       body: JSON.stringify({
         name,
@@ -162,6 +161,9 @@ class FileUploadService {
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
+
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response);
 
     const result = await response.json();
     if (result.code !== 20000) {
@@ -194,9 +196,7 @@ class FileUploadService {
     
     const response = await fetch(`${config.apiBaseUrl}/files/create`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: AuthService.createAuthHeaders(),
       credentials: 'include',
       body: JSON.stringify({
         name: file.name,
@@ -213,6 +213,9 @@ class FileUploadService {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response);
+
     const result = await response.json();
     if (result.code !== 20000) {
       throw new Error(result.msg || '确认上传失败');
@@ -227,9 +230,7 @@ class FileUploadService {
   private async initOptimizedUpload(file: File, parentPath: string, hash: string) {
     const response = await fetch(`${config.apiBaseUrl}/files/preupload`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: AuthService.createAuthHeaders(),
       credentials: 'include',
       body: JSON.stringify({
         name: file.name,
@@ -244,6 +245,9 @@ class FileUploadService {
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
+
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response);
 
     const result = await response.json();
     if (result.code !== 20000) {
@@ -262,9 +266,7 @@ class FileUploadService {
     try {
       const response = await fetch(`${config.apiBaseUrl}/files/upload/status?uploadId=${encodeURIComponent(uploadId)}`, {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: AuthService.createAuthHeaders(),
         credentials: 'include'
       });
 
@@ -272,6 +274,9 @@ class FileUploadService {
         console.warn(`获取上传状态失败: HTTP ${response.status}`);
         return [];
       }
+
+      // 处理可能的令牌刷新
+      AuthService.handleResponse(response);
 
       const result = await response.json();
       if (result.code !== 20000) {

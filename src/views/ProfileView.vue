@@ -41,11 +41,6 @@
               <label>注册时间:</label>
               <span class="info-text">{{ formatDate(userInfo.createTime) }}</span>
             </div>
-
-            <div class="form-group">
-              <label>上次修改:</label>
-              <span class="info-text">{{ formatDate(userInfo.updateTime) }}</span>
-            </div>
             
             <div class="profile-actions">
               <button type="submit" class="btn-primary" :disabled="isLoading">
@@ -65,6 +60,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStore } from 'vuex'
 import config from '@/config'
+import AuthService from '@/services/AuthService'
 
 const router = useRouter()
 const store = useStore()
@@ -76,39 +72,50 @@ const userInfo = reactive({
   nickname: '',
   avatar: '',
   birthday: '',
-  createTime: 0,
-  updateTime: 0
+  createTime: ''
 })
 
 onMounted(async () => {
-  await loadUserInfo()
+  const userInfoLoaded = await loadUserInfo()
+  
+  if (!userInfoLoaded) {
+    // 如果获取用户信息失败，跳转到登录页
+    router.push('/')
+  }
 })
 
 const loadUserInfo = async () => {
   try {
     const response = await fetch(`${config.apiBaseUrl}/user`, {
       method: 'GET',
-      credentials: 'include'
+      ...AuthService.createAuthFetchOptions()
     })
 
-    const result = await response.json()
-    
-    if (result.code === 20000 && result.data) {
-      const data = result.data
-      userInfo.id = data.id
-      userInfo.nickname = data.nickname
-      userInfo.avatar = data.avatar
-      userInfo.birthday = data.birthday ? data.birthday.substr(0, 10) : ''
-      userInfo.createTime = data.ctime
-      userInfo.updateTime = data.utime
-    } else {
-      alert('获取用户信息失败')
-      router.push('/')
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response)
+
+    if (response.ok) {
+      const result = await response.json()
+      
+      if (result.code === 20000 && result.data) {
+        const data = result.data
+        userInfo.id = data.id
+        userInfo.nickname = data.nickname
+        userInfo.avatar = data.avatar
+        userInfo.birthday = data.birthday ? data.birthday.substr(0, 10) : ''
+        userInfo.createTime = data.createTime
+        return true
+      }
     }
+    
+    // 如果响应不成功或数据格式不正确，清除本地token
+    AuthService.clearAccessToken()
+    return false
   } catch (error) {
     console.error('Get user info error:', error)
-    alert('获取用户信息失败，请检查网络连接')
-    router.push('/')
+    // 网络错误，清除本地token
+    AuthService.clearAccessToken()
+    return false
   }
 }
 
@@ -144,9 +151,16 @@ const handleAvatarChange = async (event: Event) => {
     
     const response = await fetch(`${config.apiBaseUrl}/user/update/avatar`, {
       method: 'PATCH',
+      body: formData,
+      // 为FormData请求创建特殊的fetch选项（不设置Content-Type）
       credentials: 'include',
-      body: formData
+      headers: {
+        'Authorization': `Bearer ${AuthService.getAccessToken() || ''}`
+      }
     })
+    
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response)
     
     const result = await response.json()
     
@@ -171,15 +185,15 @@ const updateProfile = async () => {
   try {
     const response = await fetch(`${config.apiBaseUrl}/user/update/info`, {
       method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
       body: JSON.stringify({
         nickname: userInfo.nickname,
         birthday: userInfo.birthday
-      })
+      }),
+      ...AuthService.createAuthFetchOptions()
     })
+    
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response)
     
     const result = await response.json()
     
@@ -202,29 +216,12 @@ const updateProfile = async () => {
   }
 }
 
-const formatDate = (time: number | bigint) => {
-  if (!time) return '未知';
+const formatDate = (dateString: string) => {
+  if (!dateString) return '未知'
   
-  // 转换为毫秒（JavaScript Date 使用毫秒）
-  const milliseconds = typeof time === 'bigint' 
-    ? Number(time) * 1000 
-    : time * 1000;
-  
-  const date = new Date(milliseconds);
-  
-  // 获取年月日
-  const year = date.getFullYear();
-  const month = date.getMonth() + 1; // 月份从 0 开始，所以要 +1
-  const day = date.getDate();
-  
-  // 获取时分秒
-  const hours = date.getHours().toString().padStart(2, '0'); // 补零
-  const minutes = date.getMinutes().toString().padStart(2, '0');
-  const seconds = date.getSeconds().toString().padStart(2, '0');
-  
-  // 返回格式：2025/5/24 14:30:45
-  return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
-};
+  const date = new Date(dateString)
+  return date.toLocaleDateString('zh-CN')
+}
 
 const goBack = () => {
   router.push('/dashboard')

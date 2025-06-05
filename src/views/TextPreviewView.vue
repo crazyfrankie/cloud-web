@@ -24,6 +24,7 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import config from '@/config'
+import AuthService from '@/services/AuthService'
 
 const route = useRoute()
 const router = useRouter()
@@ -38,8 +39,11 @@ const loadFileContent = async () => {
   try {
     const response = await fetch(`${config.apiBaseUrl}/files/${fileId.value}`, {
       method: 'GET',
-      credentials: 'include'
+      ...AuthService.createAuthFetchOptions()
     })
+    
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response)
     
     if (response.ok) {
       const result = await response.json()
@@ -55,6 +59,11 @@ const loadFileContent = async () => {
           fileContent.value = await contentResponse.text()
         }
       }
+    } else if (response.status === 401 || response.status === 403) {
+      // 认证失败，跳转到登录页
+      AuthService.clearAccessToken()
+      router.push('/')
+      return
     }
   } catch (error) {
     console.error('加载文件内容失败:', error)

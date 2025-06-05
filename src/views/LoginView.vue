@@ -44,6 +44,7 @@ import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStore } from 'vuex'
 import config from '@/config'
+import AuthService from '@/services/AuthService'
 
 const router = useRouter()
 const store = useStore()
@@ -85,11 +86,11 @@ const handleSubmit = async () => {
     
     if (result.code === 20000) {
       if (isLogin.value) {
-        // 登录成功，获取用户信息
-        const userInfo = await getUserInfo()
-        if (userInfo) {
-          store.commit('setUser', userInfo)
-        }
+        // 处理登录响应，提取并保存访问令牌
+        AuthService.handleLoginResponse(response)
+        
+        // 登录成功，直接跳转到 dashboard
+        // 用户信息会在 dashboard 组件中获取
         router.push('/dashboard')
       } else {
         // 注册成功
@@ -106,21 +107,6 @@ const handleSubmit = async () => {
     alert('操作失败，请检查网络连接')
   } finally {
     isLoading.value = false
-  }
-}
-
-const getUserInfo = async () => {
-  try {
-    const response = await fetch(`${config.apiBaseUrl}/user`, {
-      method: 'GET',
-      credentials: 'include'
-    })
-
-    const result = await response.json()
-    return result.code === 20000 ? result.data : null
-  } catch (error) {
-    console.error('Get user info error:', error)
-    return null
   }
 }
 </script>

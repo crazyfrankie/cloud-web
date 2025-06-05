@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router'
 import LoginView from '../views/LoginView.vue'
+import AuthService from '@/services/AuthService'
+import config from '@/config'
 
 const routes: Array<RouteRecordRaw> = [
   {
@@ -33,22 +35,18 @@ const router = createRouter({
 })
 
 // 路由守卫
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
+  // 如果用户访问根路径，且有访问令牌，重定向到dashboard
+  if (to.path === '/' && AuthService.isLoggedIn()) {
+    next({ name: 'dashboard' });
+    return;
+  }
+  
   // 检查路由是否需要认证
   if (to.matched.some(record => record.meta.requiresAuth)) {
-    // 检查是否有认证 cookie
-    const hasAuthCookie = document.cookie.split(';').some(cookie => {
-      const [name] = cookie.trim().split('=');
-      return name === 'cloud_access' || name === 'cloud_refresh';
-    });
-
-    if (!hasAuthCookie) {
-      // 没有认证信息，重定向到登录页
-      next({ name: 'login' });
-    } else {
-      // 有认证信息，允许访问
-      next();
-    }
+    // 对于需要认证的路由，直接放行，让组件内部去处理认证
+    // 如果认证失败，组件会自动跳转到登录页
+    next();
   } else {
     // 不需要认证的路由直接放行
     next();

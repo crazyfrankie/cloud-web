@@ -77,6 +77,7 @@ import UploadModal from '@/components/UploadModal.vue'
 import FolderModal from '@/components/FolderModal.vue'
 import RenameModal from '@/components/RenameModal.vue'
 import config from '@/config'
+import AuthService from '@/services/AuthService'
 
 const router = useRouter()
 const store = useStore()
@@ -92,7 +93,17 @@ const fileToRename = ref<any>(null)
 const userAvatar = computed(() => store.getters.userAvatar)
 const currentPath = computed(() => store.state.currentPath)
 
-onMounted(() => {
+onMounted(async () => {
+  // 先尝试获取用户信息来验证登录状态
+  const userInfoLoaded = await loadUserInfo()
+  
+  if (!userInfoLoaded) {
+    // 如果获取用户信息失败，跳转到登录页
+    router.push('/')
+    return
+  }
+  
+  // 用户信息获取成功，继续加载文件夹内容
   loadFolderContents(store.state.currentPath)
 })
 
@@ -126,19 +137,55 @@ const refreshFiles = () => {
   loadFolderContents(store.state.currentPath)
 }
 
+// 加载用户信息
+const loadUserInfo = async () => {
+  try {
+    const response = await fetch(`${config.apiBaseUrl}/user`, {
+      method: 'GET',
+      ...AuthService.createAuthFetchOptions()
+    })
+
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response)
+
+    if (response.ok) {
+      const result = await response.json()
+      if (result.code === 20000 && result.data) {
+        store.commit('setUser', result.data)
+        return true
+      }
+    }
+    
+    // 如果响应不成功或数据格式不正确，清除本地token
+    AuthService.clearAccessToken()
+    return false
+  } catch (error) {
+    console.error('Load user info error:', error)
+    // 网络错误，清除本地token
+    AuthService.clearAccessToken()
+    return false
+  }
+}
+
 // 退出登录
 const logout = async () => {
   try {
-    await fetch(`${config.apiBaseUrl}/auth/logout`, {
-      method: 'GET',  // 修改为 GET 请求，与后端一致
-      credentials: 'include'
+    const response = await fetch(`${config.apiBaseUrl}/auth/logout`, {
+      method: 'GET',
+      ...AuthService.createAuthFetchOptions()
     })
+    
+    // 清除访问令牌
+    AuthService.clearAccessToken()
     
     store.dispatch('logout')
     router.push('/')
   } catch (error) {
     console.error('Logout error:', error)
-    alert('退出失败，请重试')
+    // 即使请求失败，也清除本地令牌
+    AuthService.clearAccessToken()
+    store.dispatch('logout')
+    router.push('/')
   }
 }
 
@@ -151,8 +198,11 @@ const loadFolderContents = async (path: string) => {
     console.log(`Loading folder contents for path: ${path}`);
     const response = await fetch(`${config.apiBaseUrl}/files?path=${encodeURIComponent(path)}`, {
       method: 'GET',
-      credentials: 'include'
+      ...AuthService.createAuthFetchOptions()
     })
+    
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response)
     
     const result = await response.json()
     console.log('API response:', result);
@@ -232,8 +282,11 @@ const deleteFile = async (file: any) => {
   try {
     const response = await fetch(`${config.apiBaseUrl}/files?path=${encodeURIComponent(file.path)}`, {
       method: 'DELETE',
-      credentials: 'include'
+      ...AuthService.createAuthFetchOptions()
     })
+    
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response)
     
     const result = await response.json()
     
@@ -268,15 +321,15 @@ const handleRenameFile = async (newName: string) => {
     // 更新文件信息
     const response = await fetch(`${config.apiBaseUrl}/files/${fileToRename.value.id}`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
       body: JSON.stringify({
         name: newName,
         newPath: newPath
-      })
+      }),
+      ...AuthService.createAuthFetchOptions()
     })
+    
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response)
     
     const result = await response.json()
     
@@ -315,17 +368,17 @@ const handleUpload = async (files: FileList) => {
       // 1. 预上传检查
       const checkResponse = await fetch(`${config.apiBaseUrl}/files/precreate`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
         body: JSON.stringify({
           name: file.name,
           size: file.size,
           hash: await calculateFileHash(file),
           parentPath: store.state.currentPath // 添加父目录路径
-        })
+        }),
+        ...AuthService.createAuthFetchOptions()
       })
+      
+      // 处理可能的令牌刷新
+      AuthService.handleResponse(checkResponse)
       
       const checkResult = await checkResponse.json()
       
@@ -367,10 +420,6 @@ const handleUpload = async (files: FileList) => {
         
       const confirmResponse = await fetch(`${config.apiBaseUrl}/files/create`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
         body: JSON.stringify({
           name: file.name,
           path: filePath,
@@ -379,8 +428,12 @@ const handleUpload = async (files: FileList) => {
           url: objectKey,  // 使用对象键作为URL
           isDir: false,
           deviceId: 'web-client'
-        })
+        }),
+        ...AuthService.createAuthFetchOptions()
       })
+      
+      // 处理可能的令牌刷新
+      AuthService.handleResponse(confirmResponse)
       
       const confirmResult = await confirmResponse.json()
       
@@ -413,10 +466,6 @@ const handleCreateFolder = async (folderName: string) => {
   try {
     const response = await fetch(`${config.apiBaseUrl}/files`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
       body: JSON.stringify({
         name: folderName,
         path: store.state.currentPath === '/' ? 
@@ -424,8 +473,12 @@ const handleCreateFolder = async (folderName: string) => {
           `${store.state.currentPath}/${folderName}`,
         isDir: true,
         size: 0
-      })
+      }),
+      ...AuthService.createAuthFetchOptions()
     })
+    
+    // 处理可能的令牌刷新
+    AuthService.handleResponse(response)
     
     const result = await response.json()
     

@@ -10,6 +10,24 @@
       <div class="file-actions">操作</div>
     </div>
     
+    <!-- 批量操作工具栏 -->
+    <div v-if="selectedFiles.length > 0" class="batch-toolbar">
+      <div class="selected-info">
+        已选择 {{ selectedFiles.length }} 项
+      </div>
+      <div class="batch-actions">
+        <button class="batch-btn download" @click="handleBatchDownload">
+          批量下载
+        </button>
+        <button class="batch-btn delete" @click="handleBatchDelete">
+          批量删除
+        </button>
+        <button class="batch-btn clear" @click="clearSelection">
+          清除选择
+        </button>
+      </div>
+    </div>
+    
     <div v-if="loading" class="loading-container">
       <div class="loading-spinner"></div>
       <p>加载中...</p>
@@ -71,6 +89,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import FileDownloadService from '@/services/FileDownloadService'
 
 const props = defineProps({
   files: {
@@ -84,9 +103,45 @@ const props = defineProps({
 })
 
 // 定义事件
-const emit = defineEmits(['navigate', 'preview', 'delete', 'rename'])
+const emit = defineEmits(['navigate', 'preview', 'delete', 'rename', 'batch-download', 'batch-delete', 'start-monitored-download'])
 
 const selectedFiles = ref<Array<string | number>>([])
+
+// 清除选择
+const clearSelection = () => {
+  selectedFiles.value = []
+}
+
+// 处理批量下载
+const handleBatchDownload = async () => {
+  if (selectedFiles.value.length === 0) return
+  
+  const selectedItems = props.files.filter(file => 
+    selectedFiles.value.includes(file.id)
+  )
+  
+  // 如果只选择了一个文件，智能判断是否使用大文件下载
+  if (selectedItems.length === 1) {
+    const file = selectedItems[0]
+    await handleDownload(file)
+    clearSelection()
+    return
+  }
+  
+  // 多个文件的批量下载（使用原有逻辑）
+  emit('batch-download', selectedItems)
+}
+
+// 处理批量删除
+const handleBatchDelete = () => {
+  if (selectedFiles.value.length === 0) return
+  
+  const selectedItems = props.files.filter(file => 
+    selectedFiles.value.includes(file.id)
+  )
+  
+  emit('batch-delete', selectedItems)
+}
 
 // 处理文件/文件夹点击
 const handleFileClick = (file: any) => {
@@ -100,16 +155,76 @@ const handleFileClick = (file: any) => {
 }
 
 // 处理文件下载
-const handleDownload = (file: any) => {
-  const downloadUrl = file.downloadUrl || `/api/files/${file.id}/download`
-  // 创建一个隐藏的链接来触发下载
-  const link = document.createElement('a')
-  link.href = downloadUrl
-  link.download = file.name
-  link.target = '_blank'
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
+const downloadService = FileDownloadService
+
+const handleDownload = async (file: any) => {
+  try {
+    // 验证文件对象
+    if (!file) {
+      console.error('文件对象为空')
+      alert('文件信息异常，无法下载')
+      return
+    }
+
+    if (!file.id) {
+      console.error('文件ID缺失:', file)
+      alert('文件ID缺失，无法下载')
+      return
+    }
+
+    if (!file.name) {
+      console.error('文件名缺失:', file)
+      alert('文件名缺失，无法下载')
+      return
+    }
+
+    if (file.type === 'folder' || file.isDir) {
+      alert('不能下载文件夹')
+      return
+    }
+
+    console.log('开始下载文件:', file)
+    
+    const LARGE_FILE_THRESHOLD = 100 * 1024 * 1024 // 100MB
+    const fileSize = file.size || 0
+    
+    if (fileSize >= LARGE_FILE_THRESHOLD) {
+      // 大文件：通知父组件使用进度监控下载
+      console.log('检测到大文件，使用进度监控下载:', file.name)
+      
+      // 构建V2下载URL
+      const downloadUrl = `${downloadService.apiBaseUrl}/files/download/v2/${file.id}/stream`
+      
+      emit('start-monitored-download', {
+        file: {
+          id: file.id,
+          name: file.name,
+          size: fileSize,
+          path: file.path || '',
+          isDir: false,
+          type: file.type || 'file'
+        },
+        url: downloadUrl,
+        filename: file.name,
+        size: fileSize
+      })
+    } else {
+      // 小文件：直接下载
+      console.log('检测到小文件，使用直接下载:', file.name)
+      await downloadService.smartDownloadSingleFile({
+        id: file.id,
+        name: file.name,
+        size: fileSize,
+        path: file.path || '',
+        isDir: false,
+        type: file.type || 'file'
+      })
+    }
+  } catch (error) {
+    console.error('下载失败:', error)
+    // 可以在这里显示错误提示
+    alert('下载失败: ' + (error as Error).message)
+  }
 }
 
 // 格式化文件大小
@@ -372,5 +487,55 @@ const toggleSelectAll = (event: Event) => {
   padding: 40px;
   text-align: center;
   color: #888;
+}
+
+/* 批量操作工具栏样式 */
+.batch-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 15px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-bottom: 1px solid #ddd;
+}
+
+.selected-info {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.batch-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.batch-btn {
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.batch-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.batch-btn.download:hover {
+  background: rgba(46, 213, 115, 0.3);
+}
+
+.batch-btn.delete:hover {
+  background: rgba(255, 71, 87, 0.3);
+}
+
+.batch-btn.clear:hover {
+  background: rgba(255, 255, 255, 0.4);
 }
 </style>

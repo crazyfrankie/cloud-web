@@ -65,6 +65,16 @@ const animateToValue = (targetValue: number) => {
   const threshold = getChangeThreshold()
   const duration = getAnimationDuration()
 
+  // 对于速度类型的数据，如果是初期的小值，直接设置不显示动画
+  if (props.animationType === 'fast' && startValue === 0 && targetValue > 0) {
+    // 速度从0开始时，延迟一点显示，避免初期跳动
+    setTimeout(() => {
+      currentValue.value = targetValue
+      displayValue.value = props.formatter(targetValue)
+    }, 50)
+    return
+  }
+
   // 如果差值很小，直接跳转
   if (Math.abs(difference) < threshold) {
     currentValue.value = targetValue

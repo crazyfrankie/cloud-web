@@ -59,10 +59,12 @@ class FileUploadService {
    */
   private async uploadSmallFile(file: File, parentPath: string, hash: string, options?: UploadOptions): Promise<UploadResult> {
     // 1. 预上传检查
+    options?.onProgress?.(0.05); // 5%
     const checkResult = await this.preUploadCheck(file.name, file.size, hash, parentPath);
     
     // 如果文件已存在，直接返回
     if (checkResult.fileExists) {
+      options?.onProgress?.(1.0); // 100%
       return {
         fileId: checkResult.fileId,
         existed: true,
@@ -70,19 +72,28 @@ class FileUploadService {
       };
     }
 
-    // 2. 上传到存储
-    options?.onProgress?.(50);
-    await this.uploadToStorage(checkResult.presignedUrl, file, options?.signal);
+    // 2. 上传到存储（真实进度监控）
+    options?.onProgress?.(0.1); // 10%
+    await this.uploadToStorage(
+      checkResult.presignedUrl, 
+      file, 
+      options?.signal,
+      (uploadProgress) => {
+        // 上传占据10%-90%的进度
+        const mappedProgress = 0.1 + (uploadProgress * 0.8);
+        options?.onProgress?.(mappedProgress);
+      }
+    );
 
     // 3. 确认上传
-    options?.onProgress?.(90);
+    options?.onProgress?.(0.95); // 95%
     const filePath = parentPath === '/' ? 
       `/${file.name}` : 
       `${parentPath}/${file.name}`;
       
     const result = await this.confirmUpload(file, hash, checkResult.presignedUrl, filePath);
     
-    options?.onProgress?.(100);
+    options?.onProgress?.(1.0); // 100%
     return {
       fileId: result.fileId,
       fileUrl: result.fileUrl,
@@ -99,11 +110,12 @@ class FileUploadService {
    */
   private async uploadLargeFileOptimized(file: File, parentPath: string, hash: string, options?: UploadOptions): Promise<UploadResult> {
     // 1. 初始化优化上传（已包含断点续传状态）
-    options?.onProgress?.(5);
+    options?.onProgress?.(0.05); // 5%
     const initResult = await this.initOptimizedUpload(file, parentPath, hash);
     
     // 如果文件已存在，直接返回
     if (initResult.fileExists) {
+      options?.onProgress?.(1.0); // 100%
       return {
         fileId: initResult.fileId,
         existed: true,
@@ -124,18 +136,22 @@ class FileUploadService {
       optimalChunkSize, 
       recommendedConcurrency,
       uploadStatus,
-      (progress) => options?.onProgress?.(5 + progress * 0.85), // 5%-90%
+      (progress) => {
+        // 分块上传占据5%-90%的进度
+        const mappedProgress = 0.05 + (progress * 0.85);
+        options?.onProgress?.(mappedProgress);
+      },
       options?.signal
     );
 
     // 4. 完成上传
-    options?.onProgress?.(95);
+    options?.onProgress?.(0.95); // 95%
     const filePath = parentPath === '/' ? 
       `/${file.name}` : 
       `${parentPath}/${file.name}`;
     const result = await this.completeOptimizedUpload(uploadId, file, parentPath, hash, uploadedChunks);
     
-    options?.onProgress?.(100);
+    options?.onProgress?.(1.0); // 100%
     return {
       fileId: result.fileId,
       fileUrl: result.fileUrl,
@@ -175,18 +191,50 @@ class FileUploadService {
   }
 
   /**
-   * 上传到存储
+   * 上传到存储（支持进度监控）
    */
-  private async uploadToStorage(presignedUrl: string, file: File, signal?: AbortSignal) {
-    const response = await fetch(presignedUrl, {
-      method: 'PUT',
-      body: file,
-      signal
+  private async uploadToStorage(presignedUrl: string, file: File, signal?: AbortSignal, onProgress?: (progress: number) => void) {
+    return new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      
+      // 监听上传进度
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          const progress = event.loaded / event.total;
+          onProgress?.(progress);
+        }
+      });
+      
+      // 监听完成
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          reject(new Error(`上传失败: HTTP ${xhr.status}`));
+        }
+      });
+      
+      // 监听错误
+      xhr.addEventListener('error', () => {
+        reject(new Error('上传过程中发生网络错误'));
+      });
+      
+      // 监听中止
+      xhr.addEventListener('abort', () => {
+        reject(new Error('上传被中止'));
+      });
+      
+      // 如果有取消信号，监听取消事件
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          xhr.abort();
+        });
+      }
+      
+      // 开始上传
+      xhr.open('PUT', presignedUrl);
+      xhr.send(file);
     });
-
-    if (!response.ok) {
-      throw new Error(`上传失败: HTTP ${response.status}`);
-    }
   }
 
   /**
@@ -307,6 +355,7 @@ class FileUploadService {
   ): Promise<UploadedChunk[]> {
     const totalChunks = Math.ceil(file.size / chunkSize);
     let completedChunks = 0;
+    let lastProgressTime = 0;
 
     console.log('开始支持断点续传的分块上传:', {
       totalChunks,
@@ -356,7 +405,14 @@ class FileUploadService {
         const chunk = file.slice(start, end);
         const etag = await this.uploadSingleChunk(chunk, chunkUrl.presignedUrl, expectedPartNumber, signal);
         completedChunks++;
-        onProgress?.(completedChunks / totalChunks);
+        
+        // 优化进度更新频率：限制为每100ms更新一次
+        const currentTime = Date.now();
+        if (currentTime - lastProgressTime > 100) {
+          onProgress?.(completedChunks / totalChunks);
+          lastProgressTime = currentTime;
+        }
+        
         console.log(`新上传分块 ${expectedPartNumber}/${totalChunks} 完成, ETag: ${etag}`);
         return { partNumber: expectedPartNumber, etag };
       });
@@ -381,6 +437,8 @@ class FileUploadService {
       console.log('所有分块均已存在，无需重新上传');
     }
 
+    // 确保最终进度为100%
+    onProgress?.(1.0);
     return results.sort((a, b) => a.partNumber - b.partNumber);
   }
 

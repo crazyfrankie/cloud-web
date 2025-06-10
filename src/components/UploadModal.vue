@@ -149,39 +149,60 @@ const handleDrop = (event: DragEvent) => {
 
 // 添加文件到上传队列
 const addFilesToUploadQueue = (files: FileList) => {
+  console.log('开始添加文件到上传队列:', files.length)
+  
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     
-    uploads.value.push({
+    const uploadItem = {
       file: file,
       progress: 0,
-      status: 'pending',
+      status: 'pending' as UploadStatus, // 设置为pending，让startUpload函数正常处理
       uploadedChunks: [],
       isLargeFile: false // 优化上传服务会自动选择最佳方式
-    })
+    }
+    
+    uploads.value.push(uploadItem)
+    
+    // 立即开始上传
+    const index = uploads.value.length - 1
+    console.log('立即开始上传文件:', file.name, '索引:', index)
+    startUpload(index)
   }
 }
 
 // 开始上传单个文件
 const startUpload = async (index: number) => {
   const upload = uploads.value[index]
-  if (!upload || (upload.status !== 'pending' && upload.status !== 'paused')) {
+  console.log('startUpload 被调用:', index, upload?.file.name, upload?.status)
+  
+  if (!upload) {
+    console.error('上传项不存在:', index)
     return
   }
   
+  if (upload.status !== 'pending' && upload.status !== 'paused') {
+    console.log('上传状态不允许开始:', upload.status)
+    return
+  }
+  
+  console.log('开始上传文件:', upload.file.name)
   upload.status = 'uploading'
   
   // 创建一个 AbortController 以支持取消上传
   upload.abortController = new AbortController()
   
   try {
+    console.log('调用上传服务, 当前路径:', store.state.currentPath)
+    
     // 使用优化的文件上传服务
     const uploadPromise = optimizedFileUploadService.uploadFile(
       upload.file,
       store.state.currentPath,
       {
         onProgress: (progress) => {
-          upload.progress = progress
+          console.log('上传进度:', upload.file.name, Math.round(progress * 100) + '%')
+          upload.progress = progress * 100 // 服务返回0-1，转换为0-100
         },
         signal: upload.abortController.signal
       }
@@ -190,13 +211,14 @@ const startUpload = async (index: number) => {
     upload.uploadPromise = uploadPromise
     
     const result = await uploadPromise
+    console.log('上传完成:', upload.file.name, result)
     upload.progress = 100
     upload.status = 'completed'
     
     // 检查是否所有文件都已完成
     checkAllCompleted()
   } catch (error: any) {
-    console.error('Upload error:', error)
+    console.error('Upload error:', upload.file.name, error)
     
     // 检查是否是因为中止而失败
     if (error.name === 'AbortError') {

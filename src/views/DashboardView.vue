@@ -94,6 +94,18 @@
 
     <!-- 前端下载队列管理器 -->
     <download-queue-manager />
+
+    <!-- 通知组件 -->
+    <notification-toast ref="notificationToast" />
+
+    <!-- 确认对话框组件 -->
+    <confirm-modal 
+      :visible="confirmModalVisible"
+      :title="confirmModalTitle" 
+      :message="confirmModalMessage" 
+      @close="confirmModalVisible = false"
+      @confirm="handleConfirmAction"
+    />
   </div>
 </template>
 
@@ -108,6 +120,8 @@ import RenameModal from '@/components/RenameModal.vue'
 import DownloadModal from '@/components/DownloadModal.vue'
 import DownloadProgressMonitor from '@/components/DownloadProgressMonitor.vue'
 import DownloadQueueManager from '@/components/DownloadQueueManager.vue'
+import NotificationToast from '@/components/NotificationToast.vue'
+import ConfirmModal from '@/components/ConfirmModal.vue'
 import config from '@/config'
 import AuthService from '@/services/AuthService'
 import FileDownloadService from '@/services/FileDownloadService'
@@ -141,6 +155,15 @@ const queueMonitorTimer = ref<number | null>(null)
 
 // 下载进度监控相关状态
 const downloadMonitor = ref<InstanceType<typeof DownloadProgressMonitor> | null>(null)
+
+// 通知组件引用
+const notificationToast = ref<InstanceType<typeof NotificationToast> | null>(null)
+
+// 确认对话框相关状态
+const confirmModalVisible = ref(false)
+const confirmModalTitle = ref('确认操作')
+const confirmModalMessage = ref('')
+const confirmModalCallback = ref<(() => void) | null>(null)
 
 const userAvatar = computed(() => store.getters.userAvatar)
 const currentPath = computed(() => store.state.currentPath)
@@ -285,16 +308,16 @@ const loadFolderContents = async (path: string) => {
         files.value = processedData;
       } catch (err) {
         console.error('Error processing API response:', err);
-        alert('处理文件列表数据时出错');
+        notificationToast.value?.error('处理文件列表数据时出错');
         files.value = [];
       }
     } else {
       console.error('API returned error code:', result.code, result.msg);
-      alert('获取文件列表失败：' + result.msg)
+      notificationToast.value?.error('获取文件列表失败：' + result.msg);
     }
   } catch (error) {
     console.error('Load folder contents error:', error)
-    alert('获取文件列表失败，请检查网络连接')
+    notificationToast.value?.error('获取文件列表失败，请检查网络连接');
   } finally {
     loading.value = false
   }
@@ -327,31 +350,33 @@ const navigateToParent = () => {
 
 // 删除文件
 const deleteFile = async (file: any) => {
-  if (!confirm(`确定要删除 ${file.name} 吗？`)) {
-    return
-  }
-  
-  try {
-    const response = await fetch(`${config.apiBaseUrl}/files?path=${encodeURIComponent(file.path)}`, {
-      method: 'DELETE',
-      ...AuthService.createAuthFetchOptions()
-    })
-    
-    // 处理可能的令牌刷新
-    AuthService.handleResponse(response)
-    
-    const result = await response.json()
-    
-    if (result.code === 20000) {
-      alert('删除成功')
-      loadFolderContents(store.state.currentPath)
-    } else {
-      alert('删除失败：' + result.msg)
+  showConfirmDialog(
+    '确认删除',
+    `确定要删除 ${file.name} 吗？此操作不可恢复。`,
+    async () => {
+      try {
+        const response = await fetch(`${config.apiBaseUrl}/files?path=${encodeURIComponent(file.path)}`, {
+          method: 'DELETE',
+          ...AuthService.createAuthFetchOptions()
+        })
+        
+        // 处理可能的令牌刷新
+        AuthService.handleResponse(response)
+        
+        const result = await response.json()
+        
+        if (result.code === 20000) {
+          // 删除成功不显示通知，直接刷新列表
+          loadFolderContents(store.state.currentPath)
+        } else {
+          notificationToast.value?.error('删除失败：' + result.msg)
+        }
+      } catch (error) {
+        console.error('Delete error:', error)
+        notificationToast.value?.error('删除失败，请检查网络连接')
+      }
     }
-  } catch (error) {
-    console.error('Delete error:', error)
-    alert('删除失败，请检查网络连接')
-  }
+  )
 }
 
 // 显示重命名模态框
@@ -386,15 +411,15 @@ const handleRenameFile = async (newName: string) => {
     const result = await response.json()
     
     if (result.code === 20000) {
-      alert('重命名成功')
+      // 重命名成功不显示通知，直接刷新和关闭模态框
       loadFolderContents(store.state.currentPath)
       renameModalVisible.value = false
     } else {
-      alert('重命名失败：' + result.msg)
+      notificationToast.value?.error('重命名失败：' + result.msg)
     }
   } catch (error) {
     console.error('Rename error:', error)
-    alert('重命名失败，请检查网络连接')
+    notificationToast.value?.error('重命名失败，请检查网络连接')
   }
 }
 
@@ -413,94 +438,117 @@ const handleUpload = async (files: FileList) => {
   if (files.length === 0) return
   
   try {
+    let successCount = 0
+    let skipCount = 0
+    let errorCount = 0
+    
     // 循环处理每个文件
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
       
-      // 1. 预上传检查
-      const checkResponse = await fetch(`${config.apiBaseUrl}/files/precreate`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name: file.name,
-          size: file.size,
-          hash: await calculateFileHash(file),
-          parentPath: store.state.currentPath // 添加父目录路径
-        }),
-        ...AuthService.createAuthFetchOptions()
-      })
-      
-      // 处理可能的令牌刷新
-      AuthService.handleResponse(checkResponse)
-      
-      const checkResult = await checkResponse.json()
-      
-      if (checkResult.code !== 20000) {
-        alert(`文件 ${file.name} 预检查失败: ${checkResult.msg}`)
-        continue
-      }
-      
-      // 如果文件已存在，跳过上传
-      if (checkResult.data.fileExists) {
-        alert(`文件 ${file.name} 已存在，跳过上传`)
-        continue
-      }
-      
-      // 2. 上传文件到预签名URL
-      const presignedUrl = checkResult.data.presignedUrl
-      const objectKey = checkResult.data.objectKey
-      
-      if (!presignedUrl) {
-        alert(`文件 ${file.name} 没有获取到上传URL`)
-        continue
-      }
-      
-      // 上传到预签名URL
-      const uploadResponse = await fetch(presignedUrl, {
-        method: 'PUT',  // 预签名URL通常使用PUT
-        body: file
-      })
-      
-      if (!uploadResponse.ok) {
-        alert(`文件 ${file.name} 上传失败`)
-        continue
-      }
-      
-      // 3. 确认上传完成
-      const filePath = store.state.currentPath === '/' ? 
-        `/${file.name}` : 
-        `${store.state.currentPath}/${file.name}`;
+      try {
+        // 1. 预上传检查
+        const checkResponse = await fetch(`${config.apiBaseUrl}/files/precreate`, {
+          method: 'POST',
+          body: JSON.stringify({
+            name: file.name,
+            size: file.size,
+            hash: await calculateFileHash(file),
+            parentPath: store.state.currentPath // 添加父目录路径
+          }),
+          ...AuthService.createAuthFetchOptions()
+        })
         
-      const confirmResponse = await fetch(`${config.apiBaseUrl}/files/create`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name: file.name,
-          path: filePath,
-          size: file.size,
-          hash: await calculateFileHash(file),
-          url: objectKey,  // 使用对象键作为URL
-          isDir: false,
-          deviceId: 'web-client'
-        }),
-        ...AuthService.createAuthFetchOptions()
-      })
-      
-      // 处理可能的令牌刷新
-      AuthService.handleResponse(confirmResponse)
-      
-      const confirmResult = await confirmResponse.json()
-      
-      if (confirmResult.code !== 20000) {
-        alert(`文件 ${file.name} 确认上传失败: ${confirmResult.msg}`)
+        // 处理可能的令牌刷新
+        AuthService.handleResponse(checkResponse)
+        
+        const checkResult = await checkResponse.json()
+        
+        if (checkResult.code !== 20000) {
+          notificationToast.value?.error(`文件 ${file.name} 预检查失败: ${checkResult.msg}`)
+          errorCount++
+          continue
+        }
+        
+        // 如果文件已存在，跳过上传
+        if (checkResult.data.fileExists) {
+          notificationToast.value?.warning(`文件 ${file.name} 已存在，跳过上传`)
+          skipCount++
+          continue
+        }
+        
+        // 2. 上传文件到预签名URL
+        const presignedUrl = checkResult.data.presignedUrl
+        const objectKey = checkResult.data.objectKey
+        
+        if (!presignedUrl) {
+          notificationToast.value?.error(`文件 ${file.name} 没有获取到上传URL`)
+          errorCount++
+          continue
+        }
+        
+        // 上传到预签名URL
+        const uploadResponse = await fetch(presignedUrl, {
+          method: 'PUT',  // 预签名URL通常使用PUT
+          body: file
+        })
+        
+        if (!uploadResponse.ok) {
+          notificationToast.value?.error(`文件 ${file.name} 上传失败`)
+          errorCount++
+          continue
+        }
+        
+        // 3. 确认上传完成
+        const filePath = store.state.currentPath === '/' ? 
+          `/${file.name}` : 
+          `${store.state.currentPath}/${file.name}`;
+          
+        const confirmResponse = await fetch(`${config.apiBaseUrl}/files/create`, {
+          method: 'POST',
+          body: JSON.stringify({
+            name: file.name,
+            path: filePath,
+            size: file.size,
+            hash: await calculateFileHash(file),
+            url: objectKey,  // 使用对象键作为URL
+            isDir: false,
+            deviceId: 'web-client'
+          }),
+          ...AuthService.createAuthFetchOptions()
+        })
+        
+        // 处理可能的令牌刷新
+        AuthService.handleResponse(confirmResponse)
+        
+        const confirmResult = await confirmResponse.json()
+        
+        if (confirmResult.code !== 20000) {
+          notificationToast.value?.error(`文件 ${file.name} 确认上传失败: ${confirmResult.msg}`)
+          errorCount++
+        } else {
+          successCount++
+        }
+      } catch (error) {
+        console.error(`Upload file ${file.name} error:`, error)
+        notificationToast.value?.error(`文件 ${file.name} 上传出错`)
+        errorCount++
       }
     }
     
-    // 所有文件处理完成后，重新加载文件夹内容
-    alert('上传处理完成')
+    // 所有文件处理完成后，显示总结信息并重新加载文件夹内容
+    if (successCount > 0) {
+      notificationToast.value?.success(`成功上传 ${successCount} 个文件`)
+    }
+    if (skipCount > 0 && errorCount === 0) {
+      // 只有跳过没有错误时，不显示通知，因为已经有警告通知了
+    }
+    
     uploadModalVisible.value = false
     loadFolderContents(store.state.currentPath)
   } catch (error) {
     console.error('Upload error:', error)
-    alert('上传过程中出错，请检查网络连接')
+    notificationToast.value?.error('上传过程中出错，请检查网络连接')
   }
 }
 
@@ -535,15 +583,15 @@ const handleCreateFolder = async (folderName: string) => {
     const result = await response.json()
     
     if (result.code === 20000) {
-      alert('创建成功')
+      // 创建成功不显示通知，直接关闭模态框和刷新列表
       folderModalVisible.value = false
       loadFolderContents(store.state.currentPath)
     } else {
-      alert('创建失败：' + result.msg)
+      notificationToast.value?.error('创建失败：' + result.msg)
     }
   } catch (error) {
     console.error('Create folder error:', error)
-    alert('创建失败，请检查网络连接')
+    notificationToast.value?.error('创建失败，请检查网络连接')
   }
 }
 
@@ -552,7 +600,7 @@ const handleCreateFolder = async (folderName: string) => {
 // 处理批量下载（新的前端队列方式）
 const handleBatchDownload = async (selectedItems: any[]) => {
   if (selectedItems.length === 0) {
-    alert('请先选择要下载的文件')
+    notificationToast.value?.warning('请先选择要下载的文件')
     return
   }
 
@@ -580,45 +628,48 @@ const handleBatchDownload = async (selectedItems: any[]) => {
     
   } catch (error: any) {
     console.error('批量下载失败:', error)
-    alert('下载失败：' + (error?.message || error))
+    notificationToast.value?.error('下载失败：' + (error?.message || error))
   }
 }
 
 // 处理批量删除
 const handleBatchDelete = async (selectedItems: any[]) => {
   if (selectedItems.length === 0) {
-    alert('请先选择要删除的文件')
+    notificationToast.value?.warning('请先选择要删除的文件')
     return
   }
 
-  const confirmDelete = confirm(`确定要删除选中的 ${selectedItems.length} 个项目吗？此操作不可恢复。`)
-  if (!confirmDelete) return
+  showConfirmDialog(
+    '确认批量删除',
+    `确定要删除选中的 ${selectedItems.length} 个项目吗？此操作不可恢复。`,
+    async () => {
+      try {
+        const paths = selectedItems.map(item => item.path || 
+          (store.state.currentPath === '/' ? `/${item.name}` : `${store.state.currentPath}/${item.name}`)
+        )
 
-  try {
-    const paths = selectedItems.map(item => item.path || 
-      (store.state.currentPath === '/' ? `/${item.name}` : `${store.state.currentPath}/${item.name}`)
-    )
+        const response = await fetch(`${config.apiBaseUrl}/files/batch-delete`, {
+          method: 'POST',
+          body: JSON.stringify({
+            paths: paths
+          }),
+          ...AuthService.createAuthFetchOptions()
+        })
 
-    const response = await fetch(`${config.apiBaseUrl}/files/batch-delete`, {
-      method: 'POST',
-      body: JSON.stringify({
-        paths: paths
-      }),
-      ...AuthService.createAuthFetchOptions()
-    })
+        const result = await response.json()
 
-    const result = await response.json()
-
-    if (result.code === 20000) {
-      alert('删除成功')
-      loadFolderContents(store.state.currentPath)
-    } else {
-      alert('删除失败：' + result.msg)
+        if (result.code === 20000) {
+          // 批量删除成功不显示通知，直接刷新列表
+          loadFolderContents(store.state.currentPath)
+        } else {
+          notificationToast.value?.error('批量删除失败：' + result.msg)
+        }
+      } catch (error) {
+        console.error('批量删除失败:', error)
+        notificationToast.value?.error('批量删除失败，请检查网络连接')
+      }
     }
-  } catch (error) {
-    console.error('批量删除失败:', error)
-    alert('删除失败，请检查网络连接')
-  }
+  )
 }
 
 // 处理开始监控下载（用于单个大文件）
@@ -643,7 +694,7 @@ const handleStartMonitoredDownload = async (downloadData: {
     }
   } catch (error: any) {
     console.error('启动下载失败:', error)
-    alert('启动下载失败：' + (error?.message || error))
+    notificationToast.value?.error('启动下载失败：' + (error?.message || error))
   }
 }
 
@@ -679,6 +730,29 @@ const handleDownloadConfirm = async () => {
 
 const handleCancelQueue = async () => {
   // 这个函数保留但不再使用
+}
+
+// 处理确认对话框的操作
+const handleConfirmAction = async () => {
+  if (confirmModalCallback.value) {
+    try {
+      confirmModalCallback.value()
+    } catch (error) {
+      console.error('确认操作失败:', error)
+      notificationToast.value?.error('确认操作失败，请检查网络连接')
+    }
+  }
+  
+  confirmModalVisible.value = false
+  confirmModalCallback.value = null
+}
+
+// 显示确认对话框
+const showConfirmDialog = (title: string, message: string, callback: () => void) => {
+  confirmModalTitle.value = title
+  confirmModalMessage.value = message
+  confirmModalCallback.value = callback
+  confirmModalVisible.value = true
 }
 </script>
 

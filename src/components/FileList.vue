@@ -69,8 +69,8 @@
             {{ file.name }}
           </span>
         </div>
-        <div class="file-size">{{ formatFileSize(file.size) }}</div>
-        <div class="file-date">{{ formatDate(file.updateTime) }}</div>
+        <div class="file-size">{{ formatFileSize(file.size || 0) }}</div>
+        <div class="file-date">{{ formatDate(file.updateTime || '') }}</div>
         <div class="file-actions">
           <button v-if="file.type !== 'folder'" class="action-btn download" @click="handleDownload(file)">
             下载
@@ -91,16 +91,21 @@
 import { ref } from 'vue'
 import FileDownloadService from '@/services/FileDownloadService'
 
-const props = defineProps({
-  files: {
-    type: Array,
-    required: true
-  },
-  loading: {
-    type: Boolean,
-    default: false
-  }
-})
+// 定义文件对象类型
+interface FileItem {
+  id: string | number
+  name: string
+  size?: number
+  path?: string
+  type: string
+  isDir?: boolean
+  updateTime?: string
+}
+
+const props = defineProps<{
+  files: FileItem[]
+  loading?: boolean
+}>()
 
 // 定义事件
 const emit = defineEmits(['navigate', 'preview', 'delete', 'rename', 'batch-download', 'batch-delete', 'start-monitored-download'])
@@ -120,16 +125,50 @@ const handleBatchDownload = async () => {
     selectedFiles.value.includes(file.id)
   )
   
-  // 如果只选择了一个文件，智能判断是否使用大文件下载
-  if (selectedItems.length === 1) {
-    const file = selectedItems[0]
-    await handleDownload(file)
+  try {
+    // 如果只选择了一个文件，使用单文件下载逻辑
+    if (selectedItems.length === 1) {
+      const file = selectedItems[0]
+      await handleDownload(file)
+      clearSelection()
+      return
+    }
+    
+    // 多个文件：使用智能下载策略
+    console.log('开始批量下载:', selectedItems)
+    
+    // 将文件信息转换为FileInfo格式
+    const fileInfos = selectedItems.map(file => ({
+      id: typeof file.id === 'string' ? parseInt(file.id, 10) : file.id,
+      name: file.name,
+      size: file.size || 0,
+      path: file.path || '',
+      isDir: file.type === 'folder' || file.isDir || false,
+      type: file.type || 'file'
+    }))
+    
+    // 使用智能下载多文件方法
+    const result = await FileDownloadService.smartDownloadMultipleFiles(fileInfos)
+    
+    console.log('下载策略结果:', result)
+    
+    if (result.strategy === 'queue' || result.strategy === 'single_large_queue') {
+      // 队列下载：文件已经添加到前端队列
+      console.log('文件已添加到下载队列')
+    } else if (result.strategy === 'zip') {
+      // ZIP下载：直接下载完成
+      console.log('ZIP文件下载完成')
+    } else if (result.strategy === 'single_small') {
+      // 单个小文件直接下载完成
+      console.log('小文件直接下载完成')
+    }
+    
+  } catch (error) {
+    console.error('批量下载失败:', error)
+    alert('批量下载失败: ' + (error as Error).message)
+  } finally {
     clearSelection()
-    return
   }
-  
-  // 多个文件的批量下载（使用原有逻辑）
-  emit('batch-download', selectedItems)
 }
 
 // 处理批量删除

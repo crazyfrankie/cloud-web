@@ -69,10 +69,61 @@
             <p>{{ processingMessage }}</p>
           </div>
         </div>
+        
+        <div v-else-if="type === 'queue'" class="queue-status">
+          <div class="queue-icon">🔄</div>
+          <div class="queue-content">
+            <h4>队列下载状态</h4>
+            <div v-if="queueInfo" class="queue-details">
+              <p><strong>队列ID：</strong>{{ queueInfo.queueId }}</p>
+              <p><strong>状态：</strong>{{ getQueueStatusText(queueInfo.status) }}</p>
+              <p><strong>文件数量：</strong>{{ queueInfo.fileCount }} 个</p>
+              <p><strong>总大小：</strong>{{ formatFileSize(queueInfo.totalSize) }}</p>
+              
+              <div v-if="queueInfo.progress" class="queue-progress">
+                <div class="progress-bar">
+                  <div 
+                    class="progress-fill" 
+                    :style="{ width: queueInfo.progress.percentage + '%' }"
+                  ></div>
+                </div>
+                <div class="progress-info">
+                  <p>处理进度：{{ queueInfo.progress.percentage }}%</p>
+                  <p v-if="queueInfo.progress.currentFileName">
+                    当前文件：{{ queueInfo.progress.currentFileName }}
+                  </p>
+                  <p v-if="queueInfo.progress.speed > 0">
+                    处理速度：{{ formatFileSize(queueInfo.progress.speed) }}/s
+                  </p>
+                  <p v-if="queueInfo.progress.estimatedTime > 0">
+                    预计剩余：{{ formatTime(queueInfo.progress.estimatedTime) }}
+                  </p>
+                </div>
+              </div>
+              
+              <div v-if="queueInfo.status === 'completed' && queueInfo.downloadLinks" class="download-links">
+                <h5>下载链接：</h5>
+                <div class="links-list">
+                  <div 
+                    v-for="(link, fileId) in queueInfo.downloadLinks" 
+                    :key="fileId"
+                    class="download-link"
+                  >
+                    <a :href="link" target="_blank" class="link-button">
+                      下载文件 {{ fileId }}
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
       
       <div class="modal-footer">
-        <button class="btn-secondary" @click="$emit('close')">取消</button>
+        <button class="btn-secondary" @click="$emit('close')">
+          {{ type === 'queue' ? '关闭' : '取消' }}
+        </button>
         <button 
           v-if="type === 'large-files'" 
           class="btn-primary" 
@@ -89,6 +140,13 @@
         >
           {{ loading ? '处理中...' : '开始下载' }}
         </button>
+        <button 
+          v-else-if="type === 'queue' && queueInfo && ['pending', 'processing'].includes(queueInfo.status)" 
+          class="btn-danger" 
+          @click="handleCancelQueue"
+        >
+          取消队列
+        </button>
       </div>
     </div>
   </div>
@@ -99,13 +157,14 @@ import { ref, computed, watch } from 'vue'
 
 interface Props {
   visible: boolean
-  type: 'large-files' | 'confirm' | 'processing'
+  type: 'large-files' | 'confirm' | 'processing' | 'queue'
   title?: string
   totalSize: number
   fileCount: number
   zipName?: string
   processingMessage?: string
   loading?: boolean
+  queueInfo?: any
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -114,7 +173,7 @@ const props = withDefaults(defineProps<Props>(), {
   loading: false
 })
 
-const emit = defineEmits(['close', 'confirm'])
+const emit = defineEmits(['close', 'confirm', 'cancel-queue'])
 
 const downloadMethod = ref<'individual' | 'zip'>('zip')
 const customZipName = ref('')
@@ -126,6 +185,32 @@ const defaultZipName = computed(() => {
 const finalZipName = computed(() => {
   return customZipName.value.trim() || defaultZipName.value
 })
+
+// Queue helper methods
+const getQueueStatusText = (status: string): string => {
+  const statusMap: { [key: string]: string } = {
+    'pending': '等待中',
+    'processing': '处理中',
+    'completed': '已完成',
+    'failed': '失败',
+    'cancelled': '已取消'
+  }
+  return statusMap[status] || status
+}
+
+const formatTime = (seconds: number): string => {
+  if (seconds < 60) {
+    return `${Math.round(seconds)}秒`
+  } else if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60)
+    const remainingSeconds = Math.round(seconds % 60)
+    return `${minutes}分${remainingSeconds}秒`
+  } else {
+    const hours = Math.floor(seconds / 3600)
+    const remainingMinutes = Math.floor((seconds % 3600) / 60)
+    return `${hours}小时${remainingMinutes}分`
+  }
+}
 
 // 当对话框显示时重置状态
 watch(() => props.visible, (visible) => {
@@ -147,6 +232,10 @@ const handleConfirm = () => {
       zipName: downloadMethod.value === 'zip' ? finalZipName.value : undefined
     })
   }
+}
+
+const handleCancelQueue = () => {
+  emit('cancel-queue')
 }
 
 const formatFileSize = (bytes: number): string => {
@@ -355,6 +444,97 @@ const formatFileSize = (bytes: number): string => {
   color: #666;
 }
 
+.queue-status {
+  display: flex;
+  gap: 16px;
+}
+
+.queue-icon {
+  font-size: 48px;
+  flex-shrink: 0;
+}
+
+.queue-content h4 {
+  margin: 0 0 16px 0;
+  color: #333;
+  font-size: 16px;
+}
+
+.queue-details p {
+  margin: 8px 0;
+  color: #666;
+  line-height: 1.5;
+}
+
+.queue-progress {
+  margin: 16px 0;
+  padding: 16px;
+  background-color: #f8f9fa;
+  border-radius: 8px;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background-color: #e9ecef;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.progress-fill {
+  height: 100%;
+  background-color: #28a745;
+  transition: width 0.3s ease;
+}
+
+.progress-info p {
+  margin: 4px 0;
+  font-size: 14px;
+  color: #495057;
+}
+
+.download-links {
+  margin-top: 16px;
+  padding: 16px;
+  background-color: #e8f5e8;
+  border-radius: 8px;
+}
+
+.download-links h5 {
+  margin: 0 0 12px 0;
+  color: #155724;
+  font-size: 14px;
+}
+
+.links-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.download-link {
+  display: flex;
+  align-items: center;
+}
+
+.link-button {
+  display: inline-block;
+  padding: 8px 16px;
+  background-color: #28a745;
+  color: white;
+  text-decoration: none;
+  border-radius: 4px;
+  font-size: 14px;
+  transition: background-color 0.2s;
+}
+
+.link-button:hover {
+  background-color: #218838;
+  color: white;
+  text-decoration: none;
+}
+
 .modal-footer {
   display: flex;
   justify-content: flex-end;
@@ -364,7 +544,7 @@ const formatFileSize = (bytes: number): string => {
   background-color: #f9f9f9;
 }
 
-.btn-primary, .btn-secondary {
+.btn-primary, .btn-secondary, .btn-danger {
   padding: 10px 20px;
   border: none;
   border-radius: 6px;
@@ -395,5 +575,14 @@ const formatFileSize = (bytes: number): string => {
 
 .btn-secondary:hover {
   background-color: #d5dbdb;
+}
+
+.btn-danger {
+  background-color: #e74c3c;
+  color: white;
+}
+
+.btn-danger:hover {
+  background-color: #c0392b;
 }
 </style>

@@ -25,6 +25,7 @@
         :key="download.id" 
         class="download-item"
         :class="{ 'error': download.status === 'error', 'completed': download.status === 'completed' }"
+        :data-file-size="getFileSizeCategory(download.totalSize)"
       >
         <div class="download-info">
           <div class="file-name">{{ download.fileName }}</div>
@@ -107,7 +108,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, computed } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import FileDownloadService from '@/services/FileDownloadService'
 
 // 下载状态类型
@@ -210,15 +211,18 @@ const addDownload = async (fileId: number, fileName: string, totalSize: number):
 
   activeDownloads.push(downloadItem)
   
-  // 重新设置定时器以适应新的下载数量
-  resetProgressTimer()
+  // 对于小文件，不需要重新设置全局定时器，避免干扰其他下载
+  const isSmallFile = totalSize < 10 * 1024 * 1024
+  if (!isSmallFile) {
+    // 只有大文件才重新设置定时器
+    resetProgressTimer()
+  }
   
   // 开始下载
-  try {
-    await startDownloadById(downloadId)
-  } catch (error) {
+  // 启动并发下载（不等待完成）
+  startDownloadById(downloadId).catch(error => {
     updateDownloadStatus(downloadId, 'error', String(error))
-  }
+  })
 
   return downloadId
 }
@@ -246,16 +250,17 @@ const startDownload = async (downloadInfo: {
 
   activeDownloads.push(downloadItem)
   
-  // 重新设置定时器以适应新的下载数量
-  resetProgressTimer()
+  // 对于小文件，不需要重新设置全局定时器，避免干扰其他下载
+  const isSmallFile = downloadInfo.size < 10 * 1024 * 1024
+  if (!isSmallFile) {
+    // 只有大文件才重新设置定时器
+    resetProgressTimer()
+  }
   
   // 开始下载
-  try {
-    await startDownloadById(downloadInfo.id)
-  } catch (error) {
+  startDownloadById(downloadInfo.id).catch(error => {
     updateDownloadStatus(downloadInfo.id, 'error', String(error))
-    throw error
-  }
+  })
 }
 
 // 重命名原始的startDownload方法
@@ -282,6 +287,23 @@ const startDownloadById = async (downloadId: string) => {
     // 更新下载状态
     download.status = 'downloading'
 
+    // 根据文件大小调整读取策略
+    const isSmallFile = download.totalSize < 10 * 1024 * 1024 // 10MB以下
+    const isVerySmallFile = download.totalSize < 1024 * 1024 // 1MB以下
+    const isTinyFile = download.totalSize < 100 * 1024 // 100KB以下
+    
+    // 小文件使用更频繁的进度更新，几乎实时
+    let progressUpdateCounter = 0
+    let progressUpdateFrequency = 5 // 默认每5次读取更新一次进度
+    
+    if (isTinyFile) {
+      progressUpdateFrequency = 1 // 微型文件每次读取都更新进度
+    } else if (isVerySmallFile) {
+      progressUpdateFrequency = 1 // 极小文件也是每次都更新
+    } else if (isSmallFile) {
+      progressUpdateFrequency = 2 // 小文件每2次读取更新一次
+    }
+
     while (true) {
       const { done, value } = await reader.read()
 
@@ -289,9 +311,13 @@ const startDownloadById = async (downloadId: string) => {
 
       chunks.push(value)
       receivedLength += value.length
+      progressUpdateCounter++
 
-      // 更新进度
-      updateDownloadProgress(downloadId, receivedLength)
+      // 根据文件大小调整进度更新频率
+      if (progressUpdateCounter >= progressUpdateFrequency) {
+        updateDownloadProgress(downloadId, receivedLength)
+        progressUpdateCounter = 0
+      }
 
       // 如果下载被暂停或取消，停止读取
       const currentDownload = activeDownloads.find(d => d.id === downloadId)
@@ -300,6 +326,9 @@ const startDownloadById = async (downloadId: string) => {
         break
       }
     }
+
+    // 确保最终进度更新
+    updateDownloadProgress(downloadId, receivedLength)
 
     // 下载完成，创建文件并下载
     if (download.status === 'downloading') {
@@ -313,7 +342,18 @@ const startDownloadById = async (downloadId: string) => {
       document.body.removeChild(link)
       window.URL.revokeObjectURL(url)
 
-      updateDownloadStatus(downloadId, 'completed')
+      // 对于小文件，在状态更新前先强制设置100%进度，确保UI立即显示完成状态
+      const isSmallFile = download.totalSize < 10 * 1024 * 1024
+      if (isSmallFile) {
+        download.progress = 100
+        download.downloaded = download.totalSize
+        // 强制触发响应式更新
+        nextTick(() => {
+          updateDownloadStatus(downloadId, 'completed')
+        })
+      } else {
+        updateDownloadStatus(downloadId, 'completed')
+      }
     }
 
   } catch (error) {
@@ -321,7 +361,7 @@ const startDownloadById = async (downloadId: string) => {
   }
 }
 
-// 更新下载进度 - 最终防闪顿优化版本，解决视觉顿挫问题
+// 更新下载进度 - 多文件并发优化版本，解决第二个文件延迟问题
 const updateDownloadProgress = (downloadId: string, downloaded: number) => {
   const download = activeDownloads.find(d => d.id === downloadId)
   if (!download) return
@@ -329,72 +369,173 @@ const updateDownloadProgress = (downloadId: string, downloaded: number) => {
   const now = Date.now()
   const elapsed = (now - download.startTime) / 1000
   
-  // 更严格的防抖控制，减少不必要的响应式更新
+  // 根据文件大小判定处理策略
+  const isSmallFile = download.totalSize < 10 * 1024 * 1024 // 10MB以下为小文件
+  const isVerySmallFile = download.totalSize < 1024 * 1024 // 1MB以下为极小文件
+  const isTinyFile = download.totalSize < 100 * 1024 // 100KB以下为微型文件
+  
+  // 为每个下载独立管理防抖，避免多文件之间的相互干扰
   if (!download.lastProgressUpdate) {
     download.lastProgressUpdate = now
-  } else if (now - download.lastProgressUpdate < 800) { // 延长到800ms，进一步减少更新频率
-    // 仅更新原始数据，不触发响应式计算
+  }
+  
+  // 针对小文件的独立防抖策略：几乎不防抖
+  let debounceMs = 800 // 默认防抖时间（大文件）
+  if (isTinyFile) {
+    debounceMs = 0 // 微型文件无防抖，完全实时
+  } else if (isVerySmallFile) {
+    debounceMs = 50 // 极小文件最小防抖
+  } else if (isSmallFile) {
+    debounceMs = 100 // 小文件极小防抖
+  }
+  
+  const timeSinceLastUpdate = now - download.lastProgressUpdate
+  
+  // 小文件：强制更新策略，无视防抖限制
+  const shouldForceUpdate = isSmallFile && (
+    timeSinceLastUpdate >= debounceMs || 
+    !download.progress || 
+    download.progress === 0
+  )
+  
+  if (!shouldForceUpdate && timeSinceLastUpdate < debounceMs) {
+    // 仅更新原始数据，但不跳过小文件的重要更新
     download.downloaded = downloaded
+    if (isSmallFile) {
+      // 小文件即使在防抖期内也要更新关键数据
+      const rawProgress = (downloaded / download.totalSize) * 100
+      if (rawProgress > (download.progress || 0) + 5) { // 进度变化超过5%就强制更新
+        download.progress = Math.round(rawProgress)
+        download.lastProgressUpdate = now
+      }
+    }
     return
   }
+  
+  // 更新最后更新时间
   download.lastProgressUpdate = now
   
-  // 计算进度，使用更保守的更新策略
+  // 计算进度，小文件使用更直接的策略
   const rawProgress = (downloaded / download.totalSize) * 100
   const oldProgress = download.progress || 0
   const progressDiff = Math.abs(rawProgress - oldProgress)
   
-  // 只有显著变化（>0.5%）时才更新UI
-  if (progressDiff < 0.5 && rawProgress < 99) {
-    download.downloaded = downloaded // 仅更新数据
+  // 小文件几乎无阈值限制
+  let progressThreshold = 0.5
+  if (isTinyFile) {
+    progressThreshold = 0 // 微型文件无阈值
+  } else if (isVerySmallFile) {
+    progressThreshold = 0.01 // 极小文件几乎无阈值
+  } else if (isSmallFile) {
+    progressThreshold = 0.05 // 小文件极低阈值
+  }
+  
+  // 小文件允许任何进度变化
+  if (progressDiff < progressThreshold && rawProgress < 99 && !isSmallFile) {
+    download.downloaded = downloaded
     return
   }
   
-  // 极其平滑的进度更新，避免任何跳跃
+  // 小文件使用更直接的进度更新策略
   let smoothedProgress = rawProgress
-  if (progressDiff > 0.8) {
-    // 更保守的平滑策略：每次最多增加1%
-    const maxStep = Math.min(progressDiff / 3, 1)
-    if (rawProgress > oldProgress) {
-      smoothedProgress = oldProgress + maxStep
+  if (isTinyFile) {
+    // 微型文件：完全无平滑，直接使用真实进度
+    smoothedProgress = rawProgress
+  } else if (isVerySmallFile) {
+    // 极小文件：最小平滑，允许大幅跳跃
+    if (progressDiff > 30) {
+      smoothedProgress = oldProgress + Math.min(progressDiff / 1.1, 35) // 最多跳跃35%
     } else {
-      smoothedProgress = Math.max(oldProgress - 0.5, rawProgress) // 避免进度倒退
+      smoothedProgress = rawProgress
+    }
+  } else if (isSmallFile) {
+    // 小文件：轻微平滑
+    if (progressDiff > 15) {
+      smoothedProgress = oldProgress + Math.min(progressDiff / 1.2, 20) // 最多跳跃20%
+    } else {
+      smoothedProgress = rawProgress
+    }
+  } else {
+    // 大文件：保持原有的保守平滑策略
+    if (progressDiff > 0.8) {
+      const maxStep = Math.min(progressDiff / 3, 1)
+      if (rawProgress > oldProgress) {
+        smoothedProgress = oldProgress + maxStep
+      } else {
+        smoothedProgress = Math.max(oldProgress - 0.5, rawProgress)
+      }
     }
   }
   
-  // 限制小数精度，避免微小变化导致的重渲染
-  download.progress = Math.round(smoothedProgress * 4) / 4 // 0.25%精度
+  // 根据文件大小调整精度
+  if (isTinyFile) {
+    download.progress = Math.round(smoothedProgress) // 整数精度，最直接
+  } else if (isVerySmallFile) {
+    download.progress = Math.round(smoothedProgress) // 整数精度
+  } else if (isSmallFile) {
+    download.progress = Math.round(smoothedProgress * 2) / 2 // 0.5%精度
+  } else {
+    download.progress = Math.round(smoothedProgress * 4) / 4 // 0.25%精度
+  }
+  
   download.downloaded = downloaded
 
-  // 更稳定的速度计算
-  if (elapsed > 3) { // 延长到3秒确保更稳定的速度计算
+  // 小文件使用更积极的速度计算
+  const minElapsedForSpeed = isTinyFile ? 0.3 : (isVerySmallFile ? 0.5 : (isSmallFile ? 1.0 : 3))
+  if (elapsed > minElapsedForSpeed) {
     const currentSpeed = downloaded / elapsed
     
     if (download.speed > 0) {
-      // 使用更强的平滑权重，减少速度跳动
-      const alpha = 0.15 // 进一步降低新数据权重
+      // 小文件使用更快的速度更新权重
+      let alpha = 0.15 // 默认权重
+      if (isTinyFile) {
+        alpha = 0.8 // 微型文件使用很高的权重，几乎实时
+      } else if (isVerySmallFile) {
+        alpha = 0.6 // 极小文件使用高权重
+      } else if (isSmallFile) {
+        alpha = 0.4 // 小文件使用中高权重
+      }
       download.speed = download.speed * (1 - alpha) + currentSpeed * alpha
     } else {
       download.speed = currentSpeed
     }
   }
 
-  // 更稳定的ETA计算
-  if (download.speed > 2048) { // 提高速度阈值到2KB/s
+  // 小文件使用更积极的ETA计算
+  const minSpeedForEta = isTinyFile ? 128 : (isVerySmallFile ? 256 : (isSmallFile ? 512 : 2048))
+  if (download.speed > minSpeedForEta) {
     const remaining = download.totalSize - downloaded
     const newEta = remaining / download.speed
     
     if (download.eta > 0) {
-      // 更保守的ETA平滑，减少时间跳动
-      const etaAlpha = 0.1
+      // 小文件使用更快的ETA更新权重
+      let etaAlpha = 0.1 // 默认权重
+      if (isTinyFile) {
+        etaAlpha = 0.7 // 微型文件使用很高权重，几乎实时
+      } else if (isVerySmallFile) {
+        etaAlpha = 0.5 // 极小文件使用高权重
+      } else if (isSmallFile) {
+        etaAlpha = 0.3 // 小文件使用中等权重
+      }
       download.eta = download.eta * (1 - etaAlpha) + newEta * etaAlpha
     } else {
       download.eta = newEta
     }
   }
+  
+  // 为小文件添加强制UI更新机制
+  if (isSmallFile) {
+    // 触发响应式更新，确保UI立即反映变化
+    const index = activeDownloads.findIndex(d => d.id === downloadId)
+    if (index !== -1) {
+      // 通过数组操作触发响应式更新
+      const updatedDownload = { ...activeDownloads[index] }
+      activeDownloads.splice(index, 1, updatedDownload)
+    }
+  }
 }
 
-// 更新下载状态
+// 更新下载状态 - 多文件并发优化版本
 const updateDownloadStatus = (downloadId: string, status: DownloadStatus, error?: string) => {
   const download = activeDownloads.find(d => d.id === downloadId)
   if (!download) return
@@ -405,9 +546,23 @@ const updateDownloadStatus = (downloadId: string, status: DownloadStatus, error?
     download.error = error
   }
 
-  // 如果状态发生变化，重新设置定时器
+  // 如果状态发生变化，智能化重新设置定时器
   if (oldStatus !== status) {
-    resetProgressTimer()
+    // 对于小文件，避免重置全局定时器，让它们使用独立的进度更新
+    const isSmallFile = download.totalSize < 10 * 1024 * 1024
+    
+    if (!isSmallFile) {
+      // 只有大文件状态变化时才重置全局定时器
+      resetProgressTimer()
+    } else {
+      // 小文件状态变化时，仅检查是否所有下载都已完成
+      const activeDownloadingCount = activeDownloads.filter(d => d.status === 'downloading').length
+      if (activeDownloadingCount === 0) {
+        // 如果没有任何活跃下载了，才重置定时器
+        resetProgressTimer()
+      }
+      // 否则不干扰其他正在进行的下载
+    }
   }
 
   // 如果下载完成或出错，5秒后自动移除
@@ -465,13 +620,32 @@ const cancelDownload = (downloadId: string) => {
   removeDownload(downloadId)
 }
 
-// 移除下载任务
+// 移除下载任务 - 多文件并发优化版本
 const removeDownload = (downloadId: string) => {
   const index = activeDownloads.findIndex(d => d.id === downloadId)
   if (index !== -1) {
+    const removedDownload = activeDownloads[index]
     activeDownloads.splice(index, 1)
-    // 下载任务移除后重新设置定时器
-    resetProgressTimer()
+    
+    // 智能化定时器管理：只在必要时重置
+    const remainingDownloadingCount = activeDownloads.filter(d => d.status === 'downloading').length
+    
+    if (remainingDownloadingCount === 0) {
+      // 如果没有正在下载的任务了，重置定时器以停止更新
+      resetProgressTimer()
+    } else {
+      // 如果还有其他下载在进行中，特别是小文件，不要干扰它们
+      const isRemovedSmallFile = removedDownload.totalSize < 10 * 1024 * 1024
+      const hasLargeFileDownloading = activeDownloads.some(d => 
+        d.status === 'downloading' && d.totalSize >= 10 * 1024 * 1024
+      )
+      
+      // 只有在移除的是大文件或者还有大文件在下载时才重置定时器
+      if (!isRemovedSmallFile || hasLargeFileDownloading) {
+        resetProgressTimer()
+      }
+      // 如果移除的是小文件且剩下的都是小文件，不重置定时器，让小文件继续使用独立更新
+    }
   }
 }
 
@@ -616,7 +790,7 @@ onUnmounted(() => {
   })
 })
 
-// 计算属性：超级稳定的下载显示 - 彻底解决闪顿问题
+// 计算属性：针对小文件优化的稳定显示 - 解决快速下载的显示问题
 const stableDownloads = computed(() => {
   return activeDownloads.map(download => {
     // 使用缓存机制避免重复计算
@@ -625,45 +799,93 @@ const stableDownloads = computed(() => {
       return (download as any)._cachedDisplay
     }
     
-    // 稳定的进度显示 - 防止任何跳动
+    // 判断文件大小类型
+    const isSmallFile = download.totalSize < 10 * 1024 * 1024 // 10MB以下
+    const isVerySmallFile = download.totalSize < 1024 * 1024 // 1MB以下
+    const isTinyFile = download.totalSize < 100 * 1024 // 100KB以下
+    
+    // 根据文件大小调整进度显示策略
     let displayProgress = Math.round(download.progress || 0)
     
-    // 严格的进度递增保护
+    // 针对小文件的进度显示优化
     const lastDisplayProgress = (download as any)._lastDisplayProgress || 0
-    if (displayProgress < lastDisplayProgress && download.status === 'downloading') {
-      displayProgress = lastDisplayProgress
-    } else if (displayProgress > lastDisplayProgress + 2 && download.status === 'downloading') {
-      // 防止进度跳跃过大
-      displayProgress = lastDisplayProgress + 1
+    if (download.status === 'downloading') {
+      if (displayProgress < lastDisplayProgress) {
+        displayProgress = lastDisplayProgress // 防止进度倒退
+      } else if (isTinyFile) {
+        // 微型文件：直接显示真实进度，无限制
+        displayProgress = Math.round(download.progress || 0)
+      } else if (isVerySmallFile) {
+        // 极小文件：允许很大的进度跳跃
+        if (displayProgress > lastDisplayProgress + 50) {
+          displayProgress = lastDisplayProgress + 25 // 最多一次跳跃25%
+        }
+      } else if (isSmallFile) {
+        // 小文件：允许较大的进度跳跃
+        if (displayProgress > lastDisplayProgress + 20) {
+          displayProgress = lastDisplayProgress + 10 // 最多一次跳跃10%
+        }
+      } else {
+        // 大文件：保持原有的保守策略
+        if (displayProgress > lastDisplayProgress + 2) {
+          displayProgress = lastDisplayProgress + 1
+        }
+      }
     }
     (download as any)._lastDisplayProgress = displayProgress
     
-    // 高度稳定的速度显示 - 减少数字变化
+    // 根据文件大小调整速度显示策略
     let displaySpeed = ''
-    if (download.speed > 2048) { // 提高显示阈值
+    const speedThreshold = isVerySmallFile ? 512 : (isSmallFile ? 1024 : 2048)
+    
+    if (download.speed > speedThreshold) {
       const speedKB = download.speed / 1024
       if (speedKB < 1024) {
-        // KB/s 显示，更大幅度的四舍五入
-        const roundedSpeedKB = Math.round(speedKB / 5) * 5 // 四舍五入到5的倍数
-        displaySpeed = roundedSpeedKB + ' KB/s'
+        // KB/s 显示
+        if (isVerySmallFile) {
+          // 极小文件：更频繁的速度更新，较小的四舍五入
+          const roundedSpeedKB = Math.round(speedKB / 2) * 2 // 四舍五入到2的倍数
+          displaySpeed = roundedSpeedKB + ' KB/s'
+        } else if (isSmallFile) {
+          // 小文件：适度的四舍五入
+          const roundedSpeedKB = Math.round(speedKB / 3) * 3 // 四舍五入到3的倍数
+          displaySpeed = roundedSpeedKB + ' KB/s'
+        } else {
+          // 大文件：保持原有策略
+          const roundedSpeedKB = Math.round(speedKB / 5) * 5 // 四舍五入到5的倍数
+          displaySpeed = roundedSpeedKB + ' KB/s'
+        }
       } else {
-        // MB/s 显示，减少精度变化
+        // MB/s 显示
         const speedMB = speedKB / 1024
         if (speedMB >= 50) {
-          displaySpeed = Math.round(speedMB / 5) * 5 + ' MB/s' // 四舍五入到5的倍数
+          const roundFactor = isSmallFile ? 2 : 5
+          displaySpeed = Math.round(speedMB / roundFactor) * roundFactor + ' MB/s'
         } else if (speedMB >= 10) {
-          displaySpeed = Math.round(speedMB) + ' MB/s' // 整数显示
+          displaySpeed = Math.round(speedMB) + ' MB/s'
         } else {
-          displaySpeed = speedMB.toFixed(1) + ' MB/s' // 1位小数
+          const precision = isVerySmallFile ? 2 : 1
+          displaySpeed = speedMB.toFixed(precision) + ' MB/s'
         }
       }
     }
     
-    // 超级稳定的ETA显示 - 最小化时间跳动
+    // 根据文件大小调整ETA显示策略
     let displayEta = ''
-    if (download.eta > 0 && download.speed > 2048) {
-      if (download.eta < 15) {
+    const etaThreshold = isVerySmallFile ? 512 : (isSmallFile ? 1024 : 2048)
+    
+    if (download.eta > 0 && download.speed > etaThreshold) {
+      if (download.eta < 5) {
         displayEta = '即将完成'
+      } else if (download.eta < 30) {
+        // 小文件：显示更精确的秒数
+        if (isVerySmallFile) {
+          displayEta = Math.round(download.eta / 2) * 2 + '秒' // 四舍五入到2秒
+        } else if (isSmallFile) {
+          displayEta = Math.round(download.eta / 5) * 5 + '秒' // 四舍五入到5秒
+        } else {
+          displayEta = Math.round(download.eta / 10) * 10 + '秒' // 四舍五入到10秒
+        }
       } else if (download.eta < 90) {
         // 四舍五入到15秒的倍数
         displayEta = Math.round(download.eta / 15) * 15 + '秒'
@@ -691,6 +913,14 @@ const stableDownloads = computed(() => {
     return result
   })
 })
+
+// 获取文件大小类别（用于CSS类）
+const getFileSizeCategory = (totalSize: number): string => {
+  if (totalSize < 100 * 1024) return 'tiny' // 100KB以下为微型
+  if (totalSize < 1024 * 1024) return 'very-small' // 1MB以下为极小
+  if (totalSize < 10 * 1024 * 1024) return 'small' // 10MB以下为小
+  return 'large' // 10MB以上为大
+}
 
 // 导出方法供外部组件使用
 defineExpose({
@@ -827,11 +1057,29 @@ defineExpose({
 .progress-bar {
   height: 100%;
   border-radius: 3px;
-  /* 使用线性过渡，避免贝塞尔曲线造成的视觉不适 */
-  transition: width 1.2s linear;
+  /* 根据文件大小动态调整过渡时间 */
+  /* 小文件使用更快的过渡，大文件使用更慢的过渡 */
+  transition: width 0.8s ease-out;
   /* 开启硬件加速，减少浏览器重绘开销 */
   transform: translateZ(0);
   will-change: width;
+}
+
+/* 为不同大小的文件提供不同的过渡速度 */
+.download-item[data-file-size="tiny"] .progress-bar {
+  transition: width 0.1s ease-out; /* 微型文件：100ms过渡，几乎实时 */
+}
+
+.download-item[data-file-size="very-small"] .progress-bar {
+  transition: width 0.2s ease-out; /* 极小文件：200ms过渡 */
+}
+
+.download-item[data-file-size="small"] .progress-bar {
+  transition: width 0.4s ease-out; /* 小文件：400ms过渡 */
+}
+
+.download-item[data-file-size="large"] .progress-bar {
+  transition: width 1.2s linear; /* 大文件：1.2s线性过渡 */
 }
 
 .progress-bar.downloading {

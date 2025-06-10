@@ -79,8 +79,10 @@
       :zip-name="downloadZipName"
       :processing-message="downloadProcessingMessage"
       :loading="downloadLoading"
+      :queue-info="currentQueueInfo"
       @close="closeDownloadModal"
       @confirm="handleDownloadConfirm"
+      @cancel-queue="handleCancelQueue"
     />
 
     <!-- 下载进度监控 -->
@@ -89,6 +91,9 @@
       @download-complete="handleDownloadComplete"
       @download-error="handleDownloadError"
     />
+
+    <!-- 前端下载队列管理器 -->
+    <download-queue-manager />
   </div>
 </template>
 
@@ -102,6 +107,7 @@ import FolderModal from '@/components/FolderModal.vue'
 import RenameModal from '@/components/RenameModal.vue'
 import DownloadModal from '@/components/DownloadModal.vue'
 import DownloadProgressMonitor from '@/components/DownloadProgressMonitor.vue'
+import DownloadQueueManager from '@/components/DownloadQueueManager.vue'
 import config from '@/config'
 import AuthService from '@/services/AuthService'
 import FileDownloadService from '@/services/FileDownloadService'
@@ -119,7 +125,7 @@ const fileToRename = ref<any>(null)
 
 // 下载相关状态
 const downloadModalVisible = ref(false)
-const downloadModalType = ref<'large-files' | 'confirm' | 'processing'>('confirm')
+const downloadModalType = ref<'large-files' | 'confirm' | 'processing' | 'queue'>('confirm')
 const downloadModalTitle = ref('下载确认')
 const downloadTotalSize = ref(0)
 const downloadFileCount = ref(0)
@@ -128,6 +134,10 @@ const downloadProcessingMessage = ref('正在准备文件...')
 const downloadLoading = ref(false)
 const selectedDownloadItems = ref<Array<any>>([])
 const pendingDownloadData = ref<any>(null)
+
+// 队列下载相关状态
+const currentQueueInfo = ref<any>(null)
+const queueMonitorTimer = ref<number | null>(null)
 
 // 下载进度监控相关状态
 const downloadMonitor = ref<InstanceType<typeof DownloadProgressMonitor> | null>(null)
@@ -537,62 +547,40 @@ const handleCreateFolder = async (folderName: string) => {
   }
 }
 
-// ===== 下载相关处理函数 =====
+// ===== 下载相关处理函数（完全重构为前端队列） =====
 
-// 处理批量下载
+// 处理批量下载（新的前端队列方式）
 const handleBatchDownload = async (selectedItems: any[]) => {
   if (selectedItems.length === 0) {
     alert('请先选择要下载的文件')
     return
   }
 
-  selectedDownloadItems.value = selectedItems
-  
   try {
-    downloadLoading.value = true
-    downloadModalType.value = 'processing'
-    downloadModalTitle.value = '正在计算下载信息...'
-    downloadProcessingMessage.value = '正在分析选中的文件和文件夹...'
-    downloadModalVisible.value = true
-
-    // 计算下载信息
-    const downloadInfo = await FileDownloadService.calculateDownloadInfo(selectedItems)
+    console.log(`开始处理批量下载: ${selectedItems.length} 个项目`)
     
-    downloadTotalSize.value = downloadInfo.totalSize
-    downloadFileCount.value = downloadInfo.fileCount
-    downloadLoading.value = false
-
-    // 检查是否包含大文件（单个文件大于100MB或总大小大于100MB）
-    const LARGE_FILE_THRESHOLD = 100 * 1024 * 1024 // 100MB
-    const hasLargeFile = selectedItems.some(item => !item.isDir && item.size >= LARGE_FILE_THRESHOLD)
+    // 使用新的智能下载策略
+    const result = await FileDownloadService.smartDownloadMultipleFiles(selectedItems)
     
-    if (hasLargeFile || downloadInfo.totalSize >= LARGE_FILE_THRESHOLD) {
-      // 包含大文件：显示大文件下载提示
-      downloadModalType.value = 'large-files'
-      downloadModalTitle.value = '检测到大文件'
-      downloadZipName.value = `download_${downloadInfo.fileCount}_files`
-      
-      // 保存下载数据用于后续处理
-      pendingDownloadData.value = {
-        fileIds: downloadInfo.fileIds,
-        zipName: downloadZipName.value,
-        selectedItems: selectedItems
+    console.log('下载策略:', result.strategy)
+    
+    if (result.strategy === 'queue' || result.strategy === 'single_large_queue') {
+      // 使用前端队列下载
+      if (result.queueIds && result.queueIds.length > 0) {
+        console.log(`已添加 ${result.queueIds.length} 个文件到前端队列`)
+        // 不需要显示模态框，用户可以在右下角的队列管理器中查看进度
       }
-    } else {
-      // 小文件：显示下载确认
-      downloadModalType.value = 'confirm'
-      downloadModalTitle.value = '确认下载'
-      
-      // 保存下载数据用于后续处理
-      pendingDownloadData.value = {
-        fileIds: downloadInfo.fileIds,
-        selectedItems: selectedItems
-      }
+    } else if (result.strategy === 'zip') {
+      // ZIP下载已经自动完成
+      console.log('ZIP文件下载完成')
+    } else if (result.strategy === 'single_small') {
+      // 单个小文件直接下载已完成
+      console.log('小文件直接下载完成')
     }
-  } catch (error) {
-    console.error('批量下载计算失败:', error)
-    alert('计算下载信息失败：' + error.message)
-    closeDownloadModal()
+    
+  } catch (error: any) {
+    console.error('批量下载失败:', error)
+    alert('下载失败：' + (error?.message || error))
   }
 }
 
@@ -633,105 +621,33 @@ const handleBatchDelete = async (selectedItems: any[]) => {
   }
 }
 
-// 关闭下载模态框
-const closeDownloadModal = () => {
-  downloadModalVisible.value = false
-  downloadLoading.value = false
-  selectedDownloadItems.value = []
-  pendingDownloadData.value = null
-}
-
-// 处理下载确认
-const handleDownloadConfirm = async (confirmData: any) => {
-  if (!pendingDownloadData.value) {
-    alert('下载数据丢失，请重新选择文件')
-    closeDownloadModal()
-    return
-  }
-
-  try {
-    downloadLoading.value = true
-    downloadModalType.value = 'processing'
-    downloadProcessingMessage.value = '正在准备下载...'
-
-    const { fileIds } = pendingDownloadData.value
-    
-    if (confirmData.method === 'queue') {
-      // 添加到下载队列
-      downloadProcessingMessage.value = '正在添加到下载队列...'
-      
-      const response = await FileDownloadService.downloadFiles(
-        fileIds, 
-        confirmData.zipName
-      )
-      
-      if (response.type === 'queue') {
-        alert('文件已添加到下载队列，请在下载队列中查看进度')
-      }
-    } else {
-      // 直接下载
-      downloadProcessingMessage.value = '正在生成下载链接...'
-      
-      const zipName = confirmData.method === 'zip' ? confirmData.zipName : undefined
-      const response = await FileDownloadService.downloadFiles(fileIds, zipName)
-      
-      if (response.type === 'single' && response.dlink) {
-        // 单文件直接下载
-        await FileDownloadService.directDownload(response.dlink, response.files[0]?.name || 'download')
-      } else if (response.type === 'zip') {
-        // ZIP文件已经自动下载了
-        alert('文件下载完成')
-      } else if (response.type === 'multiple') {
-        // 多文件分别下载
-        for (const file of response.files) {
-          if (file.dlink) {
-            await FileDownloadService.directDownload(file.dlink, file.name)
-          }
-        }
-        alert('所有文件下载完成')
-      }
-    }
-    
-    closeDownloadModal()
-  } catch (error) {
-    console.error('下载失败:', error)
-    alert('下载失败：' + error.message)
-    downloadLoading.value = false
-  }
-}
-
-// ===== 监控下载相关处理函数 =====
-
-// 处理开始监控下载
+// 处理开始监控下载（用于单个大文件）
 const handleStartMonitoredDownload = async (downloadData: {
   file: any;
-  url: string;
-  filename: string;
-  size: number;
+  url?: string;
+  filename?: string;
+  size?: number;
 }) => {
   try {
-    if (!downloadMonitor.value) {
-      console.error('下载监控组件未初始化')
-      return
-    }
-
-    // 启动监控下载
-    await downloadMonitor.value.startDownload({
-      id: `download_${Date.now()}_${downloadData.file.id}`,
-      filename: downloadData.filename,
-      url: downloadData.url,
-      size: downloadData.size,
-      fileInfo: downloadData.file
-    })
+    // 如果是大文件或者没有直接下载链接，添加到前端队列
+    const fileSize = downloadData.size || downloadData.file.size
+    const LARGE_FILE_THRESHOLD = 100 * 1024 * 1024 // 100MB
     
-    console.log('已启动监控下载:', downloadData.filename)
-  } catch (error) {
-    console.error('启动监控下载失败:', error)
-    alert('启动下载失败：' + error.message)
+    if (fileSize >= LARGE_FILE_THRESHOLD) {
+      console.log('大文件添加到前端队列:', downloadData.file.name)
+      await FileDownloadService.addFilesToQueue([downloadData.file])
+    } else {
+      // 小文件直接下载
+      const result = await FileDownloadService.smartDownloadSingleFile(downloadData.file)
+      console.log('小文件直接下载完成:', downloadData.file.name)
+    }
+  } catch (error: any) {
+    console.error('启动下载失败:', error)
+    alert('启动下载失败：' + (error?.message || error))
   }
 }
 
-// 处理下载完成
+// 处理下载完成（保留兼容性）
 const handleDownloadComplete = (downloadInfo: {
   id: string;
   filename: string;
@@ -739,10 +655,9 @@ const handleDownloadComplete = (downloadInfo: {
   duration: number;
 }) => {
   console.log('下载完成:', downloadInfo)
-  // 可以在这里添加下载完成的通知或统计
 }
 
-// 处理下载错误
+// 处理下载错误（保留兼容性）
 const handleDownloadError = (error: {
   id: string;
   filename: string;
@@ -750,8 +665,20 @@ const handleDownloadError = (error: {
   canRetry: boolean;
 }) => {
   console.error('下载错误:', error)
-  // 如果是网络错误等可重试的错误，已经由组件内部处理
-  // 这里可以添加额外的错误处理逻辑
+}
+
+// 保留一些旧函数以维持兼容性，但实际不再使用
+const closeDownloadModal = () => {
+  downloadModalVisible.value = false
+  downloadLoading.value = false
+}
+
+const handleDownloadConfirm = async () => {
+  // 这个函数保留但不再使用，因为我们使用前端队列
+}
+
+const handleCancelQueue = async () => {
+  // 这个函数保留但不再使用
 }
 </script>
 

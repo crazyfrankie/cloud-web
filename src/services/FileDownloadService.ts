@@ -56,7 +56,6 @@ interface UserDownloadConfig {
 // 下载响应
 interface DownloadResponse {
   type: 'single' | 'multiple' | 'zip' | 'queue'
-  files: DownloadDetail[]
   totalSize: number
   zipName?: string
   dlink?: string
@@ -385,7 +384,6 @@ class FileDownloadService {
         
         return {
           type: 'zip',
-          files: [],
           totalSize: blob.size
         }
       } else {
@@ -921,8 +919,8 @@ class FileDownloadService {
         // 小文件：使用原有的下载方式
         const downloadResponse = await this.downloadFiles([fileInfo.id])
         
-        if (downloadResponse.type === 'single' && downloadResponse.files[0]?.dlink) {
-          await this.directDownload(downloadResponse.files[0].dlink, fileInfo.name)
+        if (downloadResponse.type === 'single' && downloadResponse.dlink) {
+          await this.directDownload(downloadResponse.dlink, fileInfo.name)
         } else {
           throw new Error('获取下载链接失败')
         }

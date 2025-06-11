@@ -184,13 +184,40 @@ const handleBatchDelete = () => {
 
 // 处理文件/文件夹点击
 const handleFileClick = (file: any) => {
-  if (file.type === 'folder') {
+  if (file.type === 'folder' || file.isDir) {
     emit('navigate', file)
   } else {
-    // 使用统一的预览API，让后端决定是预览还是下载
-    const previewUrl = file.previewUrl || `/api/files/${file.id}/preview`
-    window.open(previewUrl, '_blank')
+    // 发射预览事件，让父组件处理文件预览
+    emit('preview', file)
   }
+}
+
+// 判断文件是否支持预览
+const canPreview = (file: any) => {
+  if (!file || !file.name) return false
+  if (file.type === 'folder' || file.isDir) return false
+  
+  const extension = file.name.includes('.') ? file.name.split('.').pop()?.toLowerCase() : ''
+  if (!extension) return false
+  
+  // 支持预览的文件类型 - 基于后端KKFileView支持的类型
+  const previewableTypes = [
+    // 文本文件
+    'txt', 'md', 'json', 'xml', 'csv', 'html', 'htm', 'css', 'js', 'ts',
+    'go', 'py', 'java', 'cpp', 'c', 'log', 'yaml', 'yml', 'ini', 'conf',
+    // 图片文件
+    'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico',
+    // PDF文件
+    'pdf',
+    // 视频文件
+    'mp4', 'webm', 'avi', 'mkv', 'mov',
+    // 音频文件
+    'mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a',
+    // Office文档 (通过KKFileView)
+    'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp'
+  ]
+  
+  return previewableTypes.includes(extension)
 }
 
 // 处理文件下载

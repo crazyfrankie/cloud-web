@@ -95,8 +95,6 @@ class FileUploadService {
     
     options?.onProgress?.(1.0); // 100%
     return {
-      fileId: result.fileId,
-      fileUrl: result.fileUrl,
       message: '上传成功'
     };
   }

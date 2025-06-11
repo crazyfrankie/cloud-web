@@ -41,6 +41,7 @@
         @navigate="navigateToFolder"
         @delete="deleteFile"
         @rename="showRenameModal"
+        @preview="showFilePreview"
         @batch-download="handleBatchDownload"
         @batch-delete="handleBatchDelete"
         @start-monitored-download="handleStartMonitoredDownload"
@@ -106,6 +107,14 @@
       @close="confirmModalVisible = false"
       @confirm="handleConfirmAction"
     />
+
+    <!-- 文件预览模态框 -->
+    <file-preview-modal 
+      :visible="filePreviewModalVisible"
+      :file="fileToPreview"
+      @close="filePreviewModalVisible = false"
+      @file-updated="handleFileUpdated"
+    />
   </div>
 </template>
 
@@ -122,6 +131,7 @@ import DownloadProgressMonitor from '@/components/DownloadProgressMonitor.vue'
 import DownloadQueueManager from '@/components/DownloadQueueManager.vue'
 import NotificationToast from '@/components/NotificationToast.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
+import FilePreviewModal from '@/components/FilePreviewModal.vue'
 import config from '@/config'
 import AuthService from '@/services/AuthService'
 import FileDownloadService from '@/services/FileDownloadService'
@@ -136,6 +146,8 @@ const uploadModalVisible = ref(false)
 const folderModalVisible = ref(false)
 const renameModalVisible = ref(false)
 const fileToRename = ref<any>(null)
+const filePreviewModalVisible = ref(false)
+const fileToPreview = ref<any>(null)
 
 // 下载相关状态
 const downloadModalVisible = ref(false)
@@ -431,6 +443,12 @@ const showUploadModal = () => {
 // 显示文件夹模态框
 const showFolderModal = () => {
   folderModalVisible.value = true
+}
+
+// 显示文件预览模态框
+const showFilePreview = (file: any) => {
+  fileToPreview.value = file
+  filePreviewModalVisible.value = true
 }
 
 // 处理文件上传
@@ -753,6 +771,13 @@ const showConfirmDialog = (title: string, message: string, callback: () => void)
   confirmModalMessage.value = message
   confirmModalCallback.value = callback
   confirmModalVisible.value = true
+}
+
+// 处理文件更新事件（当在预览模态框中编辑保存文件后）
+const handleFileUpdated = (fileId: number) => {
+  console.log('文件已更新，刷新文件列表:', fileId)
+  // 刷新当前文件夹内容以显示最新的文件信息
+  loadFolderContents(store.state.currentPath)
 }
 </script>
 

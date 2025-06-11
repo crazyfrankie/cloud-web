@@ -39,7 +39,12 @@
             
             <div class="form-group">
               <label>注册时间:</label>
-              <span class="info-text">{{ formatDate(userInfo.createTime) }}</span>
+              <span class="info-text">{{ formatDate(userInfo.ctime) }}</span>
+            </div>
+
+            <div class="form-group">
+              <label>上次修改时间:</label>
+              <span class="info-text">{{ formatDate(userInfo.utime) }}</span>
             </div>
             
             <div class="profile-actions">
@@ -72,7 +77,8 @@ const userInfo = reactive({
   nickname: '',
   avatar: '',
   birthday: '',
-  createTime: ''
+  ctime: '',
+  utime: ''
 })
 
 onMounted(async () => {
@@ -103,7 +109,8 @@ const loadUserInfo = async () => {
         userInfo.nickname = data.nickname
         userInfo.avatar = data.avatar
         userInfo.birthday = data.birthday ? data.birthday.substr(0, 10) : ''
-        userInfo.createTime = data.createTime
+        userInfo.ctime = data.ctime
+        userInfo.utime = data.utime
         return true
       }
     }
@@ -216,11 +223,21 @@ const updateProfile = async () => {
   }
 }
 
-const formatDate = (dateString: string) => {
-  if (!dateString) return '未知'
-  
-  const date = new Date(dateString)
-  return date.toLocaleDateString('zh-CN')
+const formatDate = (time: number) => {
+  if (!time) return '-'
+
+  const date = new Date(time * 1000) // Convert Unix timestamp to JS Date
+
+  // Extract components
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0') // Months are 0-indexed
+  const day = String(date.getDate()).padStart(2, '0')
+
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+
+  return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`
 }
 
 const goBack = () => {

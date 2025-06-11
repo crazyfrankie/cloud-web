@@ -113,7 +113,6 @@
       :visible="filePreviewModalVisible"
       :file="fileToPreview"
       @close="filePreviewModalVisible = false"
-      @file-updated="handleFileUpdated"
     />
   </div>
 </template>
@@ -771,13 +770,6 @@ const showConfirmDialog = (title: string, message: string, callback: () => void)
   confirmModalMessage.value = message
   confirmModalCallback.value = callback
   confirmModalVisible.value = true
-}
-
-// 处理文件更新事件（当在预览模态框中编辑保存文件后）
-const handleFileUpdated = (fileId: number) => {
-  console.log('文件已更新，刷新文件列表:', fileId)
-  // 刷新当前文件夹内容以显示最新的文件信息
-  loadFolderContents(store.state.currentPath)
 }
 </script>
 

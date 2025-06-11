@@ -200,11 +200,8 @@ const canPreview = (file: any) => {
   const extension = file.name.includes('.') ? file.name.split('.').pop()?.toLowerCase() : ''
   if (!extension) return false
   
-  // 支持预览的文件类型 - 基于后端KKFileView支持的类型
+  // 支持预览的文件类型 - 只支持基本格式
   const previewableTypes = [
-    // 文本文件
-    'txt', 'md', 'json', 'xml', 'csv', 'html', 'htm', 'css', 'js', 'ts',
-    'go', 'py', 'java', 'cpp', 'c', 'log', 'yaml', 'yml', 'ini', 'conf',
     // 图片文件
     'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico',
     // PDF文件
@@ -212,9 +209,7 @@ const canPreview = (file: any) => {
     // 视频文件
     'mp4', 'webm', 'avi', 'mkv', 'mov',
     // 音频文件
-    'mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a',
-    // Office文档 (通过KKFileView)
-    'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp'
+    'mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a'
   ]
   
   return previewableTypes.includes(extension)

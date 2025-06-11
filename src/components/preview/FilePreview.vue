@@ -15,20 +15,8 @@
 
     <!-- 预览内容 -->
     <div v-else-if="previewData" class="preview-content">
-      <!-- 文本编辑器 -->
-      <div v-if="previewData.fileType === 'text'" class="text-preview">
-        <textarea
-          v-if="!readonly"
-          v-model="editableContent"
-          class="text-editor"
-          @input="handleContentChange"
-          :placeholder="'开始编辑 ' + previewData.fileName"
-        />
-        <pre v-else class="text-display">{{ previewData.textContent }}</pre>
-      </div>
-
       <!-- 图片预览 -->
-      <div v-else-if="previewData.fileType === 'image'" class="image-preview">
+      <div v-if="previewData.fileType === 'image'" class="image-preview">
         <img 
           :src="previewData.previewUrl" 
           :alt="previewData.fileName"
@@ -37,15 +25,19 @@
         />
       </div>
 
-      <!-- KKFileView预览 (Office文档、PDF等) -->
-      <div v-else-if="previewData.previewType === 'kkfileview'" class="kkfileview-preview">
+      <!-- PDF预览 -->
+      <div v-else-if="previewData.fileType === 'pdf'" class="pdf-preview">
         <iframe
-          :src="previewData.previewUrl"
-          class="kkfileview-iframe"
+          v-if="pdfBlobUrl"
+          :src="pdfBlobUrl"
+          class="pdf-iframe"
           frameborder="0"
-          @load="handleIframeLoad"
-          @error="handleIframeError"
+          @error="handlePdfError"
         />
+        <div v-else class="pdf-loading">
+          <div class="loading-spinner"></div>
+          <p>正在加载PDF...</p>
+        </div>
       </div>
 
       <!-- 视频预览 -->
@@ -76,16 +68,6 @@
         >
           您的浏览器不支持音频播放
         </audio>
-      </div>
-
-      <!-- PDF直接预览 -->
-      <div v-else-if="previewData.fileType === 'pdf'" class="pdf-preview">
-        <iframe
-          :src="previewData.previewUrl + '#toolbar=1&navpanes=1&scrollbar=1'"
-          class="pdf-iframe"
-          frameborder="0"
-          @error="handlePdfError"
-        />
       </div>
 
       <!-- 不支持的文件类型 -->
@@ -124,10 +106,45 @@ const emit = defineEmits<{
 const loading = ref(false)
 const error = ref('')
 const previewData = ref<PreviewData | null>(null)
-const editableContent = ref('')
+const pdfBlobUrl = ref('')
 
 // 计算属性
 const targetFileId = computed(() => props.fileId || props.file?.id)
+
+// 加载PDF代理数据
+const loadPdfProxy = async () => {
+  if (!previewData.value || previewData.value.fileType !== 'pdf' || previewData.value.previewType !== 'proxy') {
+    return
+  }
+
+  try {
+    // 调用stream接口获取PDF数据
+    const response = await fetch(`${config.apiBaseUrl}/files/${previewData.value.fileId}/stream`, {
+      method: 'GET',
+      ...AuthService.createAuthFetchOptions()
+    })
+
+    if (!response.ok) {
+      throw new Error('PDF数据获取失败')
+    }
+
+    // 创建Blob URL
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    pdfBlobUrl.value = url
+
+  } catch (err: any) {
+    console.error('PDF proxy load error:', err)
+    error.value = 'PDF预览加载失败：' + err.message
+  }
+}
+
+// 监听预览数据变化，如果是PDF代理类型则加载PDF数据
+watch(() => previewData.value, (newData) => {
+  if (newData && newData.fileType === 'pdf' && newData.previewType === 'proxy') {
+    loadPdfProxy()
+  }
+}, { immediate: true })
 
 // 加载预览数据 - 先定义函数
 const loadPreview = async () => {
@@ -138,6 +155,11 @@ const loadPreview = async () => {
 
   loading.value = true
   error.value = ''
+  // 清除之前的PDF URL
+  if (pdfBlobUrl.value) {
+    URL.revokeObjectURL(pdfBlobUrl.value)
+    pdfBlobUrl.value = ''
+  }
 
   try {
     const response = await fetch(`${config.apiBaseUrl}/files/${targetFileId.value}/preview`, {
@@ -153,11 +175,6 @@ const loadPreview = async () => {
     
     if (result.code === 20000) {
       previewData.value = result.data
-      
-      // 如果是文本文件，初始化编辑内容
-      if (result.data.textContent !== undefined) {
-        editableContent.value = result.data.textContent
-      }
     } else {
       error.value = result.msg || '预览加载失败'
     }
@@ -176,36 +193,14 @@ watch(() => targetFileId.value, (newFileId) => {
   }
 }, { immediate: true })
 
-// 监听编辑内容变化
-watch(() => editableContent.value, (newContent) => {
-  if (!props.readonly) {
-    emit('contentChange', newContent)
-  }
-})
-
 // 重试加载
 const retry = () => {
   loadPreview()
 }
 
-// 处理内容变化
-const handleContentChange = () => {
-  if (!props.readonly) {
-    emit('contentChange', editableContent.value)
-  }
-}
-
 // 错误处理函数
 const handleImageError = () => {
   error.value = '图片加载失败'
-}
-
-const handleIframeLoad = () => {
-  console.log('KKFileView iframe loaded successfully')
-}
-
-const handleIframeError = () => {
-  error.value = 'KKFileView预览服务不可用，请检查服务状态'
 }
 
 const handleVideoError = () => {
@@ -250,11 +245,7 @@ onMounted(() => {
 
 // 暴露方法供父组件调用
 defineExpose({
-  loadPreview,
-  getEditableContent: () => editableContent.value,
-  setEditableContent: (content: string) => {
-    editableContent.value = content
-  }
+  loadPreview
 })
 </script>
 
@@ -322,38 +313,6 @@ defineExpose({
   overflow: hidden;
 }
 
-/* 文本预览样式 */
-.text-preview {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-}
-
-.text-editor {
-  flex: 1;
-  width: 100%;
-  padding: 20px;
-  border: none;
-  outline: none;
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 14px;
-  line-height: 1.5;
-  resize: none;
-  background-color: #f8fafc;
-}
-
-.text-display {
-  flex: 1;
-  padding: 20px;
-  margin: 0;
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 14px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow: auto;
-  background-color: #f8fafc;
-}
-
 /* 图片预览样式 */
 .image-preview {
   flex: 1;
@@ -369,20 +328,6 @@ defineExpose({
   max-height: 100%;
   object-fit: contain;
   border-radius: 8px;
-}
-
-/* KKFileView预览样式 */
-.kkfileview-preview {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-}
-
-.kkfileview-iframe {
-  flex: 1;
-  width: 100%;
-  border: none;
-  background-color: #f5f5f5;
 }
 
 /* 视频预览样式 */
@@ -431,6 +376,13 @@ defineExpose({
   text-align: center;
 }
 
+.audio-hint {
+  font-size: 14px;
+  opacity: 0.8;
+  margin-top: 8px;
+  text-align: center;
+}
+
 .preview-audio {
   width: 100%;
   max-width: 400px;
@@ -447,6 +399,29 @@ defineExpose({
   flex: 1;
   width: 100%;
   border: none;
+}
+
+.pdf-loading {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  background-color: #f9fafb;
+}
+
+.pdf-loading .loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #e5e7eb;
+  border-left: 3px solid #ef4444;
+  margin-bottom: 12px;
+}
+
+.pdf-loading p {
+  color: #6b7280;
+  font-size: 14px;
 }
 
 /* 不支持的文件类型样式 */

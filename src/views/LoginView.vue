@@ -1,7 +1,7 @@
 <template>
   <div class="auth-container">
     <div class="auth-box">
-      <h2>{{ isLogin ? '登录 Cloud Storage' : '注册 Cloud Storage' }}</h2>
+      <h2>登录 Cloud Storage</h2>
       
       <form @submit.prevent="handleSubmit" class="auth-form">
         <div class="form-group">
@@ -25,15 +25,12 @@
         </div>
         
         <button type="submit" :disabled="isLoading">
-          {{ isLoading ? '处理中...' : (isLogin ? '登录' : '注册') }}
+          {{ isLoading ? '登录中...' : '登录' }}
         </button>
       </form>
       
-      <p class="auth-switch">
-        {{ isLogin ? '没有账号？' : '已有账号？' }}
-        <a href="#" @click.prevent="toggleMode">
-          {{ isLogin ? '注册' : '登录' }}
-        </a>
+      <p class="login-tip">
+        如果账号不存在，系统将自动为您创建新账号
       </p>
     </div>
   </div>
@@ -49,7 +46,6 @@ import AuthService from '@/services/AuthService'
 const router = useRouter()
 const store = useStore()
 
-const isLogin = ref(true)
 const isLoading = ref(false)
 
 const form = reactive({
@@ -57,20 +53,13 @@ const form = reactive({
   password: ''
 })
 
-const toggleMode = () => {
-  isLogin.value = !isLogin.value
-  form.nickname = ''
-  form.password = ''
-}
-
 const handleSubmit = async () => {
   if (isLoading.value) return
   
   isLoading.value = true
   
   try {
-    const endpoint = isLogin.value ? '/auth/login' : '/user/register'
-    const response = await fetch(`${config.apiBaseUrl}${endpoint}`, {
+    const response = await fetch(`${config.apiBaseUrl}/auth/login`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -85,22 +74,14 @@ const handleSubmit = async () => {
     const result = await response.json()
     
     if (result.code === 20000) {
-      if (isLogin.value) {
-        // 处理登录响应，提取并保存访问令牌
-        AuthService.handleLoginResponse(response)
-        
-        // 登录成功，直接跳转到 dashboard
-        // 用户信息会在 dashboard 组件中获取
-        router.push('/dashboard')
-      } else {
-        // 注册成功
-        alert('注册成功，请登录')
-        isLogin.value = true
-        form.nickname = ''
-        form.password = ''
-      }
+      // 处理登录响应，提取并保存访问令牌
+      AuthService.handleLoginResponse(response)
+      
+      // 登录成功，直接跳转到 dashboard
+      // 用户信息会在 dashboard 组件中获取
+      router.push('/dashboard')
     } else {
-      alert(result.msg || (isLogin.value ? '登录失败' : '注册失败'))
+      alert(result.msg || '登录失败')
     }
   } catch (error) {
     console.error('Auth error:', error)
@@ -183,18 +164,10 @@ button:disabled {
   transform: none;
 }
 
-.auth-switch {
+.login-tip {
   text-align: center;
   margin-top: 20px;
   color: #666;
-}
-
-.auth-switch a {
-  color: #667eea;
-  text-decoration: none;
-}
-
-.auth-switch a:hover {
-  text-decoration: underline;
+  font-size: 14px;
 }
 </style>
